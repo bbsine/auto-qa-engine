@@ -1,0 +1,20 @@
+---
+description: {{AGENT_NAME}} ({{AGENT_SLUG}}) OpenAPI test üretimi, CI kalite kapısı ve MCP entegrasyon kuralları
+globs: ["**/openapi*.{yaml,yml,json}", "**/swagger*.{yaml,yml,json}", "**/tests/**/*.py", ".github/workflows/*.{yml,yaml}"]
+alwaysApply: false
+---
+
+<rule>
+  <meta>
+    <name>{{AGENT_SLUG}}-integration</name>
+    <agent>{{AGENT_NAME}}</agent>
+    <operations>{{OPERATIONS}}</operations>
+  </meta>
+  <requirements>
+    <item>OpenAPI şeması (openapi.yaml / openapi.json) veya API rotaları güncellendiğinde {{AGENT_SLUG}} ajanının `generate_tests` veya `analyze_coverage` operasyonunu kullanarak entegrasyon testlerini güncelle.</item>
+    <item>Kanal seçimi: PR/Push doğrulaması için GitHub Actions (`platform-tld/agent-action@v1`, `fail-on: fail`), etkileşimli geliştirme için MCP (`https://mcp.platform.tld/{{AGENT_SLUG}}`), otomasyon betikleri için REST (`POST https://api.platform.tld/v1/agents/{{AGENT_SLUG}}/invoke`) kullan.</item>
+    <item>Kimlik doğrulama anahtarını yalnızca `PLATFORM_SECRET_KEY` ortam değişkeninden oku; `.env` dosyasında yalnızca boş `PLATFORM_SECRET_KEY=` satırı oluştur ve `.env` dosyasının `.gitignore` içinde olduğunu kontrol et. Gizli anahtarı asla istemci koduna veya repoya yazma.</item>
+    <item>`generate_tests` çıktısındaki `output.odg_plan` üretici-tüketici (POST -> GET -> PUT -> DELETE) sırasını koru ve `output.test_code` içeriğini `tests/integration/test_generated_api.py` dosyasına kaydet.</item>
+    <item>Girdi şemalarında gerçek kredi kartı numarası, CVV veya kişisel veri (KVKK) gönderme; doğrulama adımında `{{SAMPLE_INPUT}}` ile `output.summary.ast_valid == true` sonucunu kontrol et.</item>
+  </requirements>
+</rule>

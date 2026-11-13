@@ -1,0 +1,67 @@
+openapi: 3.0.3
+info: {title: Shop, version: "1"}
+paths:
+  /users:
+    post:
+      operationId: create_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email]
+              properties:
+                name: {type: string, minLength: 2, maxLength: 60}
+                email: {type: string, format: email}
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema: {type: object, required: [id, name, email], properties: {id: {type: string}, name: {type: string}, email: {type: string}}}
+  /users/{id}:
+    get:
+      operationId: get_user
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses: {"200": {description: ok}}
+    delete:
+      operationId: delete_user
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses: {"204": {description: gone}}
+  /orders:
+    post:
+      operationId: create_order
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, quantity]
+              properties:
+                user_id: {type: string}
+                quantity: {type: integer, minimum: 1}
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema: {type: object, required: [id, user_id], properties: {id: {type: string}, user_id: {type: string}}}
+  /orders/{id}:
+    get:
+      operationId: get_order
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses: {"200": {description: ok}}
+  /users/{user_id}/orders/{order_id}:
+    get:
+      operationId: get_user_order
+      parameters:
+        - {name: user_id, in: path, required: true, schema: {type: string}}
+        - {name: order_id, in: path, required: true, schema: {type: string}}
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: {type: object, required: [id, user_id], properties: {id: {type: string}, user_id: {type: string}}}

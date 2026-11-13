@@ -1,0 +1,30 @@
+# Build outputs & caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+dist/
+build/
+bin/
+obj/
+*.egg-info/
+
+# Dependencies / virtual envs
+node_modules/
+.venv/
+venv/
+env/
+
+# VCS & IDE
+.git/
+.idea/
+.vscode/
+
+# Secrets & environment files (never read or edit)
+.env
+.env.*
+*.pem
+*.key
+
+# Logs & temp
+*.log
+tmp/

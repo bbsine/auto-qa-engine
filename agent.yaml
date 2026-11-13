@@ -1,0 +1,299 @@
+spec_version: "1.1"
+slug: auto-qa-engine
+name: AutoQA API Test Üretici
+version: 1.0.0
+author:
+  name: Berkay
+  github: berkay # TODO(owner): Confirm real GitHub username before submission
+category: test-ve-qa
+short_note: >-
+  OpenAPI şemasından bağımlılık sıralı Pytest entegrasyon testleri ve gerçekçi test verisi üretir.
+description_file: docs/DESCRIPTION.md
+languages: [tr, en]
+assets:
+  icon: assets/icon.png
+  cover: assets/cover.png
+  screenshots:
+    - assets/screenshots/1.png
+    - assets/screenshots/2.png
+    - assets/screenshots/3.png
+
+types: [ci, mcp, api]
+
+runtime:
+  port: 8080
+  memory_mb: 512
+  cpu: 0.5
+  models: [fast]
+
+network:
+  allow: []
+
+operations:
+  generate_tests:
+    description: "OpenAPI (JSON/YAML) şemasını ayrıştırır, ODG bağımlılık sırasına göre çalıştırılabilir Pytest testleri ve sınır/güvenlik verileri üretir."
+    timeout_s: 60
+    input_schema:
+      type: object
+      required: [openapi_spec]
+      properties:
+        openapi_spec:
+          type: string
+          description: "OpenAPI v3.x veya Swagger 2.0 JSON/YAML şema metni."
+          minLength: 10
+        base_url:
+          type: string
+          default: "http://localhost:8000"
+          description: "Üretilen Pytest testlerinde kullanılacak hedef API adresi."
+        include_negative_tests:
+          type: boolean
+          default: true
+          description: "Sınır değer ve tip mutasyonu (400/422) negatif testlerini dahil et."
+        include_security_tests:
+          type: boolean
+          default: true
+          description: "OWASP API güvenlik (SQLi, XSS, BOLA, yetkisiz erişim) testlerini dahil et."
+        target_endpoints:
+          type: array
+          items:
+            type: string
+          description: "Opsiyonel: Yalnızca seçili yollar için test üret."
+    output_schema:
+      type: object
+      required:
+        - summary
+        - odg_plan
+        - pytest_code
+        - test_code
+        - mock_datasets
+        - mock_data
+        - endpoints_covered
+        - total_assertions
+      properties:
+        summary:
+          type: object
+          required:
+            - total_endpoints
+            - total_operations
+            - generated_test_count
+            - positive_tests
+            - negative_boundary_tests
+            - security_injection_tests
+            - ast_valid
+            - self_healed
+            - estimated_coverage_pct
+          properties:
+            total_endpoints: {type: integer}
+            total_operations: {type: integer}
+            generated_test_count: {type: integer}
+            positive_tests: {type: integer}
+            negative_boundary_tests: {type: integer}
+            security_injection_tests: {type: integer}
+            ast_valid: {type: boolean}
+            self_healed: {type: boolean}
+            estimated_coverage_pct: {type: number}
+        odg_plan:
+          type: array
+          items:
+            type: object
+            required: [step, operation_id, method, path, produces, consumes]
+            properties:
+              step: {type: integer}
+              operation_id: {type: string}
+              method: {type: string}
+              path: {type: string}
+              produces:
+                type: array
+                items: {type: string}
+              consumes:
+                type: array
+                items: {type: string}
+        pytest_code:
+          type: string
+          description: "AST doğrulamasından geçmiş, doğrudan çalıştırılabilir Pytest kodu."
+        test_code:
+          type: string
+          description: "AST doğrulamasından geçmiş Pytest kodu (pytest_code ile eşdeğer)."
+        mock_datasets:
+          type: object
+          description: "Operasyon bazlı pozitif, sınır değer ve güvenlik test verileri."
+        mock_data:
+          type: object
+          description: "Operasyon bazlı üretilen sentetik veri kümesi."
+        endpoints_covered:
+          type: array
+          items: {type: string}
+          description: "Kapsanan API uç noktalarının listesi."
+        total_assertions:
+          type: integer
+          description: "Üretilen test kodundaki toplam assert ifadesi sayısı."
+
+  generate_mocks:
+    description: "OpenAPI şemasındaki modeller için gerçekçi pozitif, sınır değer (boundary) ve güvenlik test verisi (mock) üretir."
+    timeout_s: 30
+    input_schema:
+      type: object
+      required: [openapi_spec]
+      properties:
+        openapi_spec:
+          type: string
+          minLength: 10
+        count:
+          type: integer
+          default: 3
+          maximum: 20
+    output_schema:
+      type: object
+      required: [mock_datasets, total_operations]
+      properties:
+        total_operations: {type: integer}
+        mock_datasets: {type: object}
+
+  analyze_coverage:
+    description: "OpenAPI şemasını ve opsiyonel mevcut test kodunu inceleyerek kapsama oranını ve eksik güvenlik/durum kontrollerini raporlar."
+    timeout_s: 30
+    input_schema:
+      type: object
+      required: [openapi_spec]
+      properties:
+        openapi_spec:
+          type: string
+          minLength: 10
+        existing_test_code:
+          type: string
+          default: ""
+    output_schema:
+      type: object
+      required: [coverage_pct, total_operations, covered_operations, uncovered_operations, recommendations]
+      properties:
+        coverage_pct: {type: number}
+        total_operations: {type: integer}
+        covered_operations:
+          type: array
+          items: {type: string}
+        uncovered_operations:
+          type: array
+          items: {type: string}
+        recommendations:
+          type: array
+          items: {type: string}
+
+config_schema:
+  type: object
+  required: []
+  properties:
+    test_framework:
+      type: string
+      enum: [pytest-httpx, pytest-requests]
+      default: pytest-httpx
+      title: "Test Kütüphanesi Şablonu"
+    default_locale:
+      type: string
+      enum: [tr-TR, en-US]
+      default: tr-TR
+      title: "Sentetik Veri Dili"
+    min_coverage_pct:
+      type: integer
+      default: 80
+      minimum: 0
+      maximum: 100
+      title: "Minimum CI Kapsama Eşiği (%)"
+    fail_on_missing_auth:
+      type: boolean
+      default: false
+      title: "Kimlik Doğrulaması Olmayan Uç Noktalarda Uyarı Ver"
+
+demo:
+  config:
+    test_framework: pytest-httpx
+    default_locale: tr-TR
+    min_coverage_pct: 80
+    fail_on_missing_auth: false
+  samples:
+    - operation: generate_tests
+      input:
+        base_url: "https://api.ornek-magaza.com"
+        include_negative_tests: true
+        include_security_tests: true
+        openapi_spec: |
+          openapi: "3.0.3"
+          info:
+            title: "Sipariş ve Kullanıcı API"
+            version: "1.0.0"
+          paths:
+            /users:
+              post:
+                operationId: create_user
+                summary: "Yeni kullanıcı oluşturur"
+                requestBody:
+                  required: true
+                  content:
+                    application/json:
+                      schema:
+                        type: object
+                        required: [name, email]
+                        properties:
+                          name: {type: string, minLength: 2, maxLength: 60}
+                          email: {type: string, format: email}
+                responses:
+                  "201":
+                    description: "Oluşturuldu"
+                    content:
+                      application/json:
+                        schema:
+                          type: object
+                          required: [id, name, email]
+                          properties:
+                            id: {type: string}
+                            name: {type: string}
+                            email: {type: string}
+            /users/{id}:
+              get:
+                operationId: get_user
+                summary: "Kullanıcı detayını getirir"
+                parameters:
+                  - name: id
+                    in: path
+                    required: true
+                    schema: {type: string}
+                responses:
+                  "200":
+                    description: "Başarılı"
+              delete:
+                operationId: delete_user
+                summary: "Kullanıcıyı siler"
+                parameters:
+                  - name: id
+                    in: path
+                    required: true
+                    schema: {type: string}
+                responses:
+                  "204":
+                    description: "Silindi"
+    - operation: analyze_coverage
+      input:
+        openapi_spec: |
+          openapi: "3.0.3"
+          info:
+            title: "Ödeme ve Sepet API"
+            version: "1.0.0"
+          paths:
+            /cart:
+              post:
+                operationId: add_to_cart
+                responses:
+                  "201": {description: "Eklendi"}
+            /cart/{id}:
+              get:
+                operationId: get_cart
+                parameters:
+                  - name: id
+                    in: path
+                    required: true
+                    schema: {type: string}
+                responses:
+                  "200": {description: "Tamam"}
+        existing_test_code: |
+          def test_add_to_cart(client):
+              r = client.post("/cart", json={"item_id": "SKU-101"})
+              assert r.status_code == 201
