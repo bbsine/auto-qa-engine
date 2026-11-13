@@ -8,7 +8,7 @@ Bu belge, **{{AGENT_NAME}}** (`{{AGENT_SLUG}}`) ajanının üç desteklenen plat
 
 | Entegrasyon Kanalı | Ne Zaman Kullanılır? | Nasıl Çalışır? |
 | :--- | :--- | :--- |
-| **CI (GitHub Actions)** | Her `push` veya `Pull Request` sırasında API sözleşmesini otomatik test etmek ve kapsama eşiği (`min_coverage_pct`) altında kalan PR'ları durdurmak için. | `.github/workflows/ci.yml` içinde `platform-tld/agent-action@v1` adımı olarak çalışır. `status: "fail"` dönerse CI adımı başarısız sayılır. |
+| **CI (GitHub Actions)** | Her `push` veya `Pull Request` sırasında API sözleşmesini otomatik test etmek ve kapsama eşiği (`min_coverage_pct`) altında kalan PR'ları durdurmak için. | `.github/workflows/auto-qa.yml` içinde `platform-tld/agent-action@v1` adımı olarak çalışır. `status: "fail"` dönerse CI adımı başarısız sayılır. |
 | **MCP (Model Context Protocol)** | Claude Code, Cursor veya Windsurf içinde kod yazarken mevcut OpenAPI şemasından etkileşimli olarak `pytest` dosyası ve mock veri üretmek için. | AI kodlama aracına MCP sunucusu (`https://mcp.platform.tld/{{AGENT_SLUG}}`) olarak eklenir. |
 | **API (SDK / REST)** | Kendi iç QA otomasyon hattınızdan veya arka uç (backend) servisinizden programatik olarak test paketi ve sentetik veri üretmek için. | `@platform/sdk` veya `POST https://api.platform.tld/v1/agents/{{AGENT_SLUG}}/invoke` uç noktası ile çağrılır. |
 

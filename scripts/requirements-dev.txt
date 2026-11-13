@@ -1,1 +1,5 @@
+# Developer-only tools. NOT used by src/ and NOT part of requirements.txt (runtime image).
+# pillow: scripts/make_assets.py (store images, real TrueType fonts)
+# python-multipart: tests/e2e/form_servers.py (FastAPI Form()/UploadFile reference servers)
 pillow>=10.0.0
+python-multipart>=0.0.9

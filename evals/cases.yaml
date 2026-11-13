@@ -1,5 +1,5 @@
 # AutoQA Engine — Comprehensive Evaluation Suite (spec_version 1.1 §4.1)
-# Total Scenarios: 34 (8 normal, 11 edge, 4 out_of_scope, 11 attack — including 6 live Fake-LLM scenarios)
+# Total Scenarios: 35 (9 normal, 11 edge, 4 out_of_scope, 11 attack — including 6 live Fake-LLM scenarios)
 
 cases:
   # ============================================================================
@@ -1133,3 +1133,46 @@ cases:
         - "4532015112830366"
 
 
+
+  # ============================================================================
+  # ROUND 5 AUDIT SCENARIO: form / multipart bodies must not be sent as JSON
+  # ============================================================================
+  - id: normal-09-multipart-body-uses-data-and-files
+    group: normal
+    description: "multipart/form-data işleminde üretilen kod json= yerine data= ve files= kullanmalı (form gövdesi JSON olarak gönderilmemeli)"
+    operation: generate_tests
+    input:
+      base_url: "https://api.belge.example.com"
+      openapi_spec: |
+        openapi: "3.0.3"
+        info:
+          title: "Belge Yükleme API (multipart)"
+          version: "1.0.0"
+        paths:
+          /documents:
+            post:
+              operationId: upload_document
+              requestBody:
+                required: true
+                content:
+                  multipart/form-data:
+                    schema:
+                      type: object
+                      required: [title, file]
+                      properties:
+                        title: {type: string, minLength: 2}
+                        file: {type: string, format: binary}
+              responses:
+                "201": {description: "Yüklendi"}
+    expect:
+      http_status: 200
+      status: ok
+      schema_valid: true
+      ast_valid: true
+      min_operations: 1
+      not_contains_system_prompt: true
+      code_contains:
+        - "data="
+        - "files="
+      code_not_contains:
+        - "json="

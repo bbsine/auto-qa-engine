@@ -63,3 +63,60 @@ def test_assets_with_pillow_if_installed() -> None:
         assert icon.getpixel((511, 511))[3] == 0
         # Center area should have non-transparent symbol pixels
         assert any(icon.getpixel((x, 256))[3] > 0 for x in range(100, 412))
+
+
+def test_glyph_coverage_helper_rejects_font_missing_character() -> None:
+    """[3] missing_glyphs() must reject a font that renders a missing-glyph box or blank mask for a character."""
+    from scripts.make_assets import missing_glyphs
+
+    class _MockMask:
+        def __init__(self, data: bytes) -> None:
+            self._data = data
+
+        def tobytes(self) -> bytes:
+            return self._data
+
+    class _FakeFontMissingTurkish:
+        def getbbox(self, ch: str) -> tuple[int, int, int, int]:
+            if ch in ("\uffff", "\U0010fffe", "\ufdd0", "ğ", "ş"):
+                return (0, 0, 8, 12)
+            return (0, 0, 7, 12)
+
+        def getmask(self, ch: str) -> _MockMask:
+            if ch in ("\uffff", "\U0010fffe", "\ufdd0", "ğ", "ş"):
+                return _MockMask(b"\xff\x00\xff\x00")
+            return _MockMask(ch.encode("utf-8"))
+
+    gaps = missing_glyphs(_FakeFontMissingTurkish(), "abc ğ ş")
+    assert "ğ" in gaps and "ş" in gaps
+    assert "a" not in gaps and "b" not in gaps and "c" not in gaps
+
+
+def test_layout_lines_never_exceed_canvas_width() -> None:
+    """[3] Wrapped and truncated lines must fit strictly within max_width measured by font.getlength()."""
+    from PIL import ImageFont  # type: ignore
+
+    from scripts.make_assets import find_font, layout_lines, load_font_file
+
+    font_path = find_font("AutoQA API Test Üretici abcdefghijklmnopqrstuvwxyz")
+    font = load_font_file(font_path, 16)
+    max_w = 240.0
+    sample_lines = [
+        "https://api.ornek-magaza.example.com/v2/very/long/endpoint/path/that/would/otherwise/clip",
+        "    total_assertions: 12 | estimated_coverage_pct: 100.0 | Türkçe karakterler: çğıöşü",
+    ]
+    for mode in ("truncate", "wrap"):
+        laid = layout_lines(font, sample_lines, max_w, mode=mode)
+        assert laid
+        for line in laid:
+            assert font.getlength(line) <= max_w + 1e-6, f"{mode} line exceeded {max_w}: {line!r}"
+
+
+def test_make_assets_has_no_transliteration_table() -> None:
+    """[3] scripts/make_assets.py must not contain str.maketrans / _TR_MAP transliteration or bitmap font tables."""
+    src = (REPO_ROOT / "scripts" / "make_assets.py").read_text(encoding="utf-8")
+    assert "maketrans" not in src
+    assert "_TR_MAP" not in src
+    assert "_FONT_5X7" not in src
+    assert "SCREENSHOT " not in src
+

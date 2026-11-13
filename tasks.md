@@ -35,7 +35,7 @@
 - [x] **`src/parser.py` (Deterministic OpenAPI 3.x & Swagger 2.0 Parser)**:
   - Parse OpenAPI 3.0.x / 3.1.x and Swagger 2.0 JSON and YAML specifications.
   - Resolve internal `$ref` component schemas (`#/components/schemas/...` and `#/definitions/...`).
-  - Extract normalized endpoint IR: path, HTTP method, `operationId`, path/query/header parameters, request body schema (including Swagger 2.0 `in: body` and `in: formData`), required fields, constraints (`minLength`, `maxLength`, `minimum`, `maximum`, `enum`, `format`), and expected response status codes/schemas.
+  - Extract normalized endpoint IR: path, HTTP method, `operationId`, path/query/header parameters, `request_content_type`, `base_path` (Swagger `basePath` / OpenAPI 3 `servers[0].url` path), request body schema (including Swagger 2.0 `in: body` and `in: formData`), required fields, constraints (`minLength`, `maxLength`, `minimum`, `maximum`, `enum`, `format`), and expected response status codes/schemas.
 - [x] **`src/planner.py` (Operation Dependency Graph & Topological Planner)**:
   - Build directed dependency graph $G = (V, E)$ linking producer operations (e.g., `POST /users` returning `id`) to consumer operations (e.g., `GET /users/{id}`, `POST /orders` requiring `user_id`, `PUT /users/{id}`, `DELETE /users/{id}`).
   - Perform topological sorting with deterministic cycle breaking (CRUD priority: `POST` $\to$ `GET` $\to$ `PUT/PATCH` $\to$ `DELETE`).
@@ -57,12 +57,12 @@
 
 ---
 
-## Phase 3: Contract Tests, Unit Tests & 34-Scenario Eval Suite
+## Phase 3: Contract Tests, Unit Tests & 35-Scenario Eval Suite
 - [x] **`tests/test_contract.py` (Mandatory Platform Contract Tests)**
-- [x] **`tests/test_engine.py` & Regression Suites (`test_regressions_round1..3.py`, `test_swagger2.py`, `test_assets.py`, `test_docs_examples.py`, `test_check_submission.py`)**
-- [x] **`evals/cases.yaml` (34 Evaluation Scenarios: 8 `normal`, 11 `edge`, 4 `out_of_scope`, 11 `attack`)**
+- [x] **`tests/test_engine.py` & Regression Suites (`test_regressions_round1..3.py`, `test_swagger2.py`, `test_form_bodies_and_base_path.py`, `test_assets.py`, `test_docs_examples.py`, `test_check_submission.py`, `test_lint_integrations.py`)**
+- [x] **`evals/cases.yaml` (35 Evaluation Scenarios: 9 `normal`, 11 `edge`, 4 `out_of_scope`, 11 `attack`)**
 - [x] **`EVAL_REPORT.md`**:
-  - Execute all 34 evaluation scenarios (including live `FakeLLMServer` cases) and generate the root-level `EVAL_REPORT.md`.
+  - Execute all 35 evaluation scenarios (including live `FakeLLMServer` cases) and generate the root-level `EVAL_REPORT.md`.
 
 ---
 
@@ -78,7 +78,7 @@
 
 ## Phase 5: Automated Submission Verification & Manual Owner Release (`v-vize`)
 - [x] Run full `pytest` suite (`tests/` + `independent_tests/`) and verify 100% pass rate.
-- [x] Run `evals/run_evals.py` (`34/34` scenarios) and verify `EVAL_REPORT.md` is up to date.
+- [x] Run `evals/run_evals.py` (`35/35` scenarios) and verify `EVAL_REPORT.md` is up to date.
 - [x] Run `scripts/check_submission.py` and `scripts/lint_integrations.py` against `spec_version 1.1` Appendix C checklist.
 - [ ] **[Manual Step for Owner]** Verify `author.github` in `agent.yaml`.
 - [ ] **[Manual Step for Owner]** Run the integration instructions (`integrations/claude-code.md`, `codex.md`, or `cursor.mdc`) on two real external projects and fill the verification table in `integrations/common.md` Section 4.

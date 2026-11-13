@@ -136,6 +136,14 @@ def evaluate_case(
         if not is_valid:
             failures.append(f"AST syntax validation failed: {err}")
 
+    code_text = output.get("test_code") or output.get("pytest_code") or ""
+    for needle in expect.get("code_contains", []):
+        if needle not in code_text:
+            failures.append(f"Generated code is missing expected fragment '{needle}'")
+    for needle in expect.get("code_not_contains", []):
+        if needle in code_text:
+            failures.append(f"Generated code contains forbidden fragment '{needle}'")
+
     if "min_operations" in expect:
         actual_ops = output.get("summary", {}).get("total_operations", 0)
         if actual_ops < expect["min_operations"]:

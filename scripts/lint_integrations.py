@@ -21,6 +21,10 @@ SK_KEY_RE = re.compile(r"\bsk_[A-Za-z0-9_-]*")
 
 TOOL_FILES = ("claude-code.md", "codex.md", "cursor.mdc")
 
+CANONICAL_WORKFLOW_FILE = "auto-qa.yml"
+# Matches concrete workflow file names only; generic globs such as `.github/workflows/*.{yml,yaml}` do not match.
+WORKFLOW_FILE_RE = re.compile(r"\.github/workflows/([A-Za-z0-9_.-]+\.ya?ml)")
+
 
 def check_integrations(repo_root: Path = REPO_ROOT) -> list[str]:
     """Validate `integrations/` files against spec_version 1.1 §3.3 rules.
@@ -73,6 +77,24 @@ def check_integrations(repo_root: Path = REPO_ROOT) -> list[str]:
             errors.append(f"{rel}: missing '.gitignore' verification instruction for .env.")
         if "{{SAMPLE_INPUT}}" not in text:
             errors.append(f"{rel}: missing '{{SAMPLE_INPUT}}' verification step.")
+
+    # 4. All integration files must reference the same CI workflow file name
+    workflow_names: dict[str, set[str]] = {}
+    for fpath in sorted(int_dir.iterdir()):
+        if fpath.is_file():
+            for found in WORKFLOW_FILE_RE.findall(fpath.read_text(encoding="utf-8")):
+                workflow_names.setdefault(found, set()).add(f"integrations/{fpath.name}")
+    if len(workflow_names) > 1:
+        detail = "; ".join(f"{name} (in {', '.join(sorted(files))})" for name, files in sorted(workflow_names.items()))
+        errors.append(
+            "integrations/*: inconsistent CI workflow file names, expected exactly one "
+            f"(use .github/workflows/auto-qa.yml everywhere): {detail}"
+        )
+    elif workflow_names and next(iter(workflow_names)) != CANONICAL_WORKFLOW_FILE:
+        errors.append(
+            f"integrations/*: CI workflow file must be .github/workflows/{CANONICAL_WORKFLOW_FILE}, "
+            f"found {next(iter(workflow_names))}."
+        )
 
     return errors
 
