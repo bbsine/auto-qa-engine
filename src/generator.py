@@ -108,9 +108,16 @@ def _contains_leaked_prompt_or_secrets(text: str) -> bool:
         "platform_signing_secret",
         "llm_api_key",
     ]
-    secret_val = os.environ.get("PLATFORM_SIGNING_SECRET", "").strip()
-    if secret_val and len(secret_val) >= 4 and secret_val.lower() in lower:
-        return True
+    skip_placeholders = {"test", "test-key", "fake-key", "dummy", "dummy-key", "mock-key", "placeholder"}
+    for env_name, min_len in (("PLATFORM_SIGNING_SECRET", 4), ("LLM_API_KEY", 6)):
+        secret_val = os.environ.get(env_name, "").strip()
+        if (
+            secret_val
+            and len(secret_val) >= min_len
+            and secret_val.lower() not in skip_placeholders
+            and secret_val.lower() in lower
+        ):
+            return True
     return any(marker in lower for marker in forbidden_markers)
 
 
@@ -223,13 +230,12 @@ def _build_deterministic_operation_mocks(op: OperationSpec, locale: str = "tr-TR
             "security_payloads": [],
         }
 
+    from src.validator import body_encoding_for_content_type
+
+    encoding = body_encoding_for_content_type(getattr(op, "request_content_type", None))
     props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
     raw_req = schema.get("required")
-    required_fields = (
-        [r for r in raw_req if isinstance(r, str)]
-        if isinstance(raw_req, list)
-        else list(props.keys())
-    )
+    required_fields = [r for r in raw_req if isinstance(r, str)] if isinstance(raw_req, list) else []
 
     sample_count = max(1, min(int(_as_number(count, 1, as_int=True)), 20))
     valid_samples: list[dict[str, Any]] = []
@@ -253,18 +259,50 @@ def _build_deterministic_operation_mocks(op: OperationSpec, locale: str = "tr-TR
         p_dict = prop_spec if isinstance(prop_spec, dict) else {}
         p_type = _normalize_schema_type(p_dict.get("type"), default="string")
         if p_type == "string":
+            enum_vals = p_dict.get("enum")
             min_len = int(_as_number(p_dict.get("minLength"), 0, as_int=True))
-            mutated_payload[str(prop_name)] = "" if min_len > 0 else 12345
+            max_len = int(_as_number(p_dict.get("maxLength"), 0, as_int=True))
+            fmt = str(p_dict.get("format") or "").lower()
+            if isinstance(enum_vals, list) and enum_vals:
+                mutated_payload[str(prop_name)] = "__invalid_enum_value__"
+            elif min_len > 0:
+                mutated_payload[str(prop_name)] = ""
+            elif max_len > 0:
+                mutated_payload[str(prop_name)] = "x" * (min(max_len, 256) + 10)
+            elif fmt == "email":
+                mutated_payload[str(prop_name)] = "not-an-email"
+            elif fmt == "uuid":
+                mutated_payload[str(prop_name)] = "not-a-uuid"
+            elif encoding == "json":
+                # In form/multipart bodies, integers serialize as strings and stay valid; mutate non-JSON strings only via constraints.
+                mutated_payload[str(prop_name)] = 12345
         elif p_type in ("integer", "number"):
-            min_val = float(_as_number(p_dict.get("minimum"), 0, as_int=False))
-            mutated_payload[str(prop_name)] = -999999 if min_val >= 0 else "invalid_number"
+            is_int = p_type == "integer"
+            raw_min = p_dict.get("minimum")
+            raw_excl = p_dict.get("exclusiveMinimum")
+            raw_max = p_dict.get("maximum")
+            if raw_min is not None and not isinstance(raw_min, bool):
+                min_val = _as_number(raw_min, 0, as_int=is_int)
+                mutated_payload[str(prop_name)] = int(min_val) - 1 if is_int else round(float(min_val) - 1.0, 2)
+            elif raw_excl is not None and not isinstance(raw_excl, bool):
+                excl_val = _as_number(raw_excl, 0, as_int=is_int)
+                mutated_payload[str(prop_name)] = int(excl_val) if is_int else float(excl_val)
+            elif raw_max is not None and not isinstance(raw_max, bool):
+                max_val = _as_number(raw_max, 0, as_int=is_int)
+                mutated_payload[str(prop_name)] = int(max_val) + 1 if is_int else round(float(max_val) + 1.0, 2)
+            else:
+                mutated_payload[str(prop_name)] = "invalid_number"
         elif p_type == "boolean":
             mutated_payload[str(prop_name)] = "not_a_boolean"
+        elif p_type == "array":
+            if encoding == "json":
+                mutated_payload[str(prop_name)] = "not_an_array"
         else:
-            mutated_payload[str(prop_name)] = None
+            if encoding == "json":
+                mutated_payload[str(prop_name)] = None
     if mutated_payload:
         boundary_payloads.append(mutated_payload)
-    elif not boundary_payloads:
+    elif not boundary_payloads and encoding == "json" and not props:
         boundary_payloads.append({"__invalid_field__": None})
 
     security_payload: dict[str, Any] = {}
@@ -297,84 +335,146 @@ def _enrich_mocks_via_llm(
     tenant_id: str = "unknown",
     request_id: str = "unknown",
 ) -> dict[str, dict[str, Any]]:
-    """Use Platform LLM Proxy (`model='fast'`) to synthesize domain-realistic mock values safely."""
-    compact_ops = []
-    for step in plan[:10]:
-        op = step.operation
-        if op.request_body_schema:
-            compact_ops.append(
-                {
-                    "operation_id": op.operation_id,
-                    "method": op.method,
-                    "path": op.path,
-                    "summary": op.summary,
-                    "description": op.description,
-                    "request_schema": op.request_body_schema,
-                }
-            )
-    if not compact_ops:
+    """Use Platform LLM Proxy (`model='fast'`) to synthesize schema-validated domain-realistic mock values safely."""
+    import jsonschema
+
+    from src.validator import _file_field_names, body_encoding_for_content_type
+
+    body_steps = [step for step in plan if step.operation.request_body_schema]
+    if not body_steps:
         logger.info("llm_enrichment=disabled reason=no_request_body tenant_id=%s request_id=%s", tenant_id, request_id)
         return base_mocks
 
-    user_prompt = (
-        f"Dil/Locale: {locale}\n"
-        "Aşağıdaki OpenAPI operasyonları için her `operation_id` anahtarı altında "
-        "`valid_payload`, `boundary_payloads` (liste) ve `security_payloads` (liste) içeren bir JSON nesnesi üret.\n"
-        "<UNTRUSTED_SCHEMA>\n"
-        f"{json.dumps(compact_ops, ensure_ascii=False)}\n"
-        "</UNTRUSTED_SCHEMA>"
-    )
+    step_by_op_id = {step.operation.operation_id: step.operation for step in body_steps}
+    merged: dict[str, dict[str, Any]] = {k: dict(v) for k, v in base_mocks.items()}
+    any_applied = False
 
-    try:
-        resp = client.chat.completions.create(
-            model="fast",
-            messages=[
-                {"role": "system", "content": SYNTHESIS_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.2,
+    for batch_start in range(0, len(body_steps), 10):
+        batch = body_steps[batch_start : batch_start + 10]
+        compact_ops = [
+            {
+                "operation_id": step.operation.operation_id,
+                "method": step.operation.method,
+                "path": step.operation.path,
+                "summary": step.operation.summary,
+                "description": step.operation.description,
+                "request_schema": step.operation.request_body_schema,
+            }
+            for step in batch
+        ]
+        user_prompt = (
+            f"Dil/Locale: {locale}\n"
+            "Aşağıdaki OpenAPI operasyonları için her `operation_id` anahtarı altında "
+            "`valid_payload`, `boundary_payloads` (liste) ve `security_payloads` (liste) içeren bir JSON nesnesi üret.\n"
+            "<UNTRUSTED_SCHEMA>\n"
+            f"{json.dumps(compact_ops, ensure_ascii=False)}\n"
+            "</UNTRUSTED_SCHEMA>"
         )
-        raw_content = resp.choices[0].message.content or "{}"
-        if _contains_leaked_prompt_or_secrets(raw_content):
+
+        try:
+            resp = client.chat.completions.create(
+                model="fast",
+                messages=[
+                    {"role": "system", "content": SYNTHESIS_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.2,
+            )
+            raw_content = resp.choices[0].message.content or "{}"
+            if _contains_leaked_prompt_or_secrets(raw_content):
+                logger.warning(
+                    "llm_enrichment=fallback_rejected reason=prohibited_or_leaked_content tenant_id=%s request_id=%s",
+                    tenant_id,
+                    request_id,
+                )
+                return base_mocks
+
+            cleaned = strip_markdown_fences(raw_content)
+            parsed = json.loads(cleaned)
+            if not isinstance(parsed, dict) or scan_object_for_sensitive_data(parsed):
+                logger.warning(
+                    "llm_enrichment=fallback_rejected reason=invalid_shape_or_sensitive tenant_id=%s request_id=%s",
+                    tenant_id,
+                    request_id,
+                )
+                return base_mocks
+
+            for op_id, op_data in parsed.items():
+                if op_id not in merged or not isinstance(op_data, dict):
+                    continue
+                op_spec = step_by_op_id.get(op_id)
+                schema = op_spec.request_body_schema if op_spec else None
+                base_entry = merged[op_id]
+                base_valid = base_entry.get("valid_payload") if isinstance(base_entry.get("valid_payload"), dict) else {}
+                encoding = body_encoding_for_content_type(getattr(op_spec, "request_content_type", None)) if op_spec else "json"
+                file_fields = _file_field_names(schema) if encoding == "multipart" else set()
+
+                raw_llm_valid = op_data.get("valid_payload")
+                if isinstance(raw_llm_valid, dict) and isinstance(schema, dict):
+                    schema_props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+                    filtered_llm = (
+                        {k: v for k, v in raw_llm_valid.items() if k in schema_props and k not in file_fields}
+                        if schema_props
+                        else dict(raw_llm_valid)
+                    )
+                    candidate_valid = {**base_valid, **filtered_llm}
+                    schema_ok = True
+                    try:
+                        jsonschema.validate(instance=candidate_valid, schema=schema)
+                    except jsonschema.ValidationError:
+                        schema_ok = False
+                    except Exception:
+                        schema_ok = True
+                    if schema_ok and candidate_valid:
+                        base_entry["valid_payload"] = candidate_valid
+                        existing_samples = list(base_entry.get("valid_samples") or [])
+                        if existing_samples:
+                            existing_samples[0] = dict(candidate_valid)
+                        else:
+                            existing_samples = [dict(candidate_valid)]
+                        base_entry["valid_samples"] = existing_samples
+
+                raw_boundaries = op_data.get("boundary_payloads")
+                if isinstance(raw_boundaries, list):
+                    has_required = isinstance(schema, dict) and isinstance(schema.get("required"), list) and len(schema["required"]) > 0
+                    clean_boundaries = [
+                        bp for bp in raw_boundaries
+                        if isinstance(bp, dict) and (bp or has_required)
+                    ]
+                    if clean_boundaries:
+                        base_entry["boundary_payloads"] = clean_boundaries
+
+                raw_security = op_data.get("security_payloads")
+                if isinstance(raw_security, list):
+                    clean_security: list[dict[str, Any]] = []
+                    for sp in raw_security:
+                        if isinstance(sp, dict) and sp:
+                            sp_copy = dict(sp)
+                            for f_key in file_fields:
+                                if f_key not in sp_copy and f_key in base_valid:
+                                    sp_copy[f_key] = base_valid[f_key]
+                            clean_security.append(sp_copy)
+                    if clean_security:
+                        base_entry["security_payloads"] = clean_security
+
+            any_applied = True
+        except Exception as exc:
+            exc_name = type(exc).__name__
+            is_timeout = "timeout" in exc_name.lower() or "timeout" in str(exc).lower()
+            tag = "llm_enrichment=fallback_timeout" if is_timeout else "llm_enrichment=fallback_rejected"
             logger.warning(
-                "llm_enrichment=fallback_rejected reason=prohibited_or_leaked_content tenant_id=%s request_id=%s",
+                "%s exc_type=%s tenant_id=%s request_id=%s",
+                tag,
+                exc_name,
                 tenant_id,
                 request_id,
             )
-            return base_mocks
+            if not any_applied:
+                return base_mocks
 
-        cleaned = strip_markdown_fences(raw_content)
-        parsed = json.loads(cleaned)
-        if not isinstance(parsed, dict) or scan_object_for_sensitive_data(parsed):
-            logger.warning(
-                "llm_enrichment=fallback_rejected reason=invalid_shape_or_sensitive tenant_id=%s request_id=%s",
-                tenant_id,
-                request_id,
-            )
-            return base_mocks
-
-        merged = dict(base_mocks)
-        for op_id, op_data in parsed.items():
-            if op_id in merged and isinstance(op_data, dict):
-                if isinstance(op_data.get("valid_payload"), dict):
-                    merged[op_id]["valid_payload"] = op_data["valid_payload"]
-                if isinstance(op_data.get("boundary_payloads"), list) and op_data["boundary_payloads"]:
-                    merged[op_id]["boundary_payloads"] = op_data["boundary_payloads"]
-                if isinstance(op_data.get("security_payloads"), list) and op_data["security_payloads"]:
-                    merged[op_id]["security_payloads"] = op_data["security_payloads"]
+    if any_applied:
         logger.info("llm_enrichment=applied tenant_id=%s request_id=%s", tenant_id, request_id)
         return merged
-    except Exception as exc:
-        exc_name = type(exc).__name__
-        is_timeout = "timeout" in exc_name.lower() or "timeout" in str(exc).lower()
-        tag = "llm_enrichment=fallback_timeout" if is_timeout else "llm_enrichment=fallback_rejected"
-        logger.warning(
-            "%s exc_type=%s tenant_id=%s request_id=%s",
-            tag,
-            exc_name,
-            tenant_id,
-            request_id,
-        )
 
     return base_mocks
 
@@ -491,15 +591,24 @@ def generate_test_suite_pipeline(
         request_id = str(cfg.get("__request_id__") or "unknown")
         base_url = resolve_effective_base_url(inp.get("base_url"), parsed_spec.servers, parsed_spec.base_path)
         user_base_url = inp.get("base_url")
-        if isinstance(user_base_url, str) and user_base_url.strip():
-            # Re-run the same SSRF / sensitive-data checks used on the raw input against the final value.
-            unsafe, reason = is_ssrf_url(base_url, allow_local_base_url=True)
+        has_user_base_url = isinstance(user_base_url, str) and bool(user_base_url.strip())
+        # Enforce SSRF / sensitive-data checks on final resolved URL (both explicit input.base_url and spec.servers[0]).
+        ssrf_candidate = base_url
+        skip_relative_spec_url = (
+            not has_user_base_url
+            and ssrf_candidate.startswith("/")
+            and not ssrf_candidate.startswith("//")
+        )
+        if not skip_relative_spec_url:
+            if not has_user_base_url and "{scheme}" in ssrf_candidate:
+                ssrf_candidate = ssrf_candidate.replace("{scheme}", "https")
+            unsafe, reason = is_ssrf_url(ssrf_candidate, allow_local_base_url=True)
             if unsafe:
                 raise ValueError(f"ssrf_blocked: {reason}")
-            if contains_prohibited_payment_data(base_url):
-                raise ValueError(
-                    "prohibited_sensitive_data: Girdide kart numarası, CVV, TCKN veya banka şifresi gibi hassas veri tespit edildi."
-                )
+        if contains_prohibited_payment_data(base_url):
+            raise ValueError(
+                "prohibited_sensitive_data: Girdide kart numarası, CVV, TCKN veya banka şifresi gibi hassas veri tespit edildi."
+            )
         include_negative = bool(inp.get("include_negative_tests", True))
         include_security = bool(inp.get("include_security_tests", True))
 
@@ -520,16 +629,22 @@ def generate_test_suite_pipeline(
         else:
             logger.info("llm_enrichment=disabled tenant_id=%s request_id=%s", tenant_id, request_id)
 
+        from src.validator import resolve_step_param_bindings
+
+        test_framework = str(cfg.get("test_framework") or "pytest-httpx")
         candidate_code = build_deterministic_pytest_suite(
             plan=odg_plan,
             mock_datasets=mock_datasets,
             base_url=base_url,
             include_negative_tests=include_negative,
             include_security_tests=include_security,
+            test_framework=test_framework,
         )
 
         ast_valid, ast_error = validate_test_syntax(candidate_code)
         self_healed = False
+        effective_neg = include_negative
+        effective_sec = include_security
         if not ast_valid and ast_error:
             repaired_code, healed = attempt_single_turn_ast_repair(candidate_code, ast_error)
             if healed:
@@ -537,12 +652,15 @@ def generate_test_suite_pipeline(
                 ast_valid = True
                 self_healed = True
             else:
+                effective_neg = False
+                effective_sec = False
                 candidate_code = build_deterministic_pytest_suite(
                     plan=odg_plan,
                     mock_datasets=mock_datasets,
-                    base_url="http://localhost:8000",
+                    base_url=base_url,
                     include_negative_tests=False,
                     include_security_tests=False,
+                    test_framework=test_framework,
                 )
                 ast_valid, _ = validate_test_syntax(candidate_code)
                 self_healed = True
@@ -551,18 +669,17 @@ def generate_test_suite_pipeline(
         negative_count = sum(
             1
             for s in odg_plan
-            if include_negative
+            if effective_neg
             and s.operation.method in ("POST", "PUT", "PATCH")
             and mock_datasets.get(s.operation.operation_id, {}).get("boundary_payloads")
         )
         security_count = sum(
             1
             for s in odg_plan
-            if include_security
+            if effective_sec
             and (
                 (s.operation.method in ("POST", "PUT", "PATCH") and mock_datasets.get(s.operation.operation_id, {}).get("security_payloads"))
-                or s.param_bindings
-                or s.operation.parameters
+                or bool(resolve_step_param_bindings(s))
                 or s.operation.security_required
             )
         )
@@ -958,6 +1075,7 @@ def analyze_coverage_pipeline(
         covered: list[str] = []
         uncovered: list[str] = []
         recommendations: list[str] = []
+        fail_on_missing_auth = bool(cfg.get("fail_on_missing_auth"))
 
         for op in parsed_spec.operations:
             path_regex = _compile_openapi_path_regex(op.path)
@@ -985,7 +1103,9 @@ def analyze_coverage_pipeline(
                     f"{op.method} {op.path} ({op.operation_id}) için pozitif ve sınır değer (400/422) testleri eksik."
                 )
 
-            if not op.security_required and op.method in ("POST", "PUT", "PATCH", "DELETE"):
+            if not op.security_required and (
+                fail_on_missing_auth or op.method in ("POST", "PUT", "PATCH", "DELETE")
+            ):
                 recommendations.append(
                     f"Güvenlik uyarısı: {op.method} {op.path} uç noktasında açık bir kimlik doğrulama (security) şeması tanımlanmamış."
                 )
@@ -997,6 +1117,13 @@ def analyze_coverage_pipeline(
             status = "fail" if min_threshold > 0 and uncovered else "ok"
         else:
             status = "ok" if coverage_pct >= min_threshold else "fail"
+
+        if (
+            fail_on_missing_auth
+            and status == "ok"
+            and any(not op.security_required for op in parsed_spec.operations)
+        ):
+            status = "needs_review"
 
         output = {
             "coverage_pct": coverage_pct,

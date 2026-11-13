@@ -4,7 +4,7 @@ name: AutoQA API Test Üretici
 version: 1.0.0
 author:
   name: Berkay
-  github: berkay # TODO(owner): Confirm real GitHub username before submission
+  github: bbsine
 category: test-ve-qa
 short_note: >-
   OpenAPI şemasından bağımlılık sıralı Pytest entegrasyon testleri ve gerçekçi test verisi üretir.

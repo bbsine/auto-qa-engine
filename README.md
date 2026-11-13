@@ -40,7 +40,7 @@ auto-qa-engine/
 ├── .gitignore                 # .env, __pycache__, .venv, IDE ve geçici dosyalar
 ├── .dockerignore              # Docker bağlam (context) dışlama kuralları
 ├── requirements.txt           # Sabitlenmiş minimal çalışma zamanı bağımlılıkları
-├── EVAL_REPORT.md             # 34 senaryoluk değerlendirme raporu (%100 başarı)
+├── EVAL_REPORT.md             # 38 senaryoluk değerlendirme raporu (%100 başarı)
 ├── architecture.md            # Sistem mimarisi, ODG ve AST öz-onarım tasarımı
 ├── memory.md                  # Sabit tasarım kararları ve 100 puanlık vize rubriği
 ├── contract_rules.md          # Platform güvenlik ve sözleşme kuralları
@@ -61,7 +61,7 @@ auto-qa-engine/
 │   └── test_check_submission.py # Teslim öncesi kontrol betiği doğrulama testleri
 ├── evals/
 │   ├── README.md              # Eval grupları ve expect anahtarları dokümantasyonu
-│   ├── cases.yaml             # 4 zorunlu grupta 34 değerlendirme senaryosu
+│   ├── cases.yaml             # 4 zorunlu grupta 38 değerlendirme senaryosu
 │   ├── fake_llm_server.py     # Canlı LLM Proxy senaryoları için yerel OpenAI uyumlu sunucu
 │   └── run_evals.py           # Değerlendirme koşturucusu ve şema doğrulayıcı
 ├── scripts/
@@ -103,7 +103,7 @@ python -m pip install -r requirements.txt
 
 # 2. Zorunlu platform ortam değişkenlerini tanımlayın (Sandbox/Test)
 export PLATFORM_SIGNING_SECRET="test-secret"
-export LLM_BASE_URL="http://localhost:9999/v1"
+export LLM_BASE_URL=""
 export LLM_API_KEY="test-key"
 export PORT=8080
 
@@ -114,14 +114,14 @@ uvicorn src.main:app --host 0.0.0.0 --port 8080
 ### 3.3 Docker ile Paketleme ve Çalıştırma
 
 ```bash
-# İmajı derleyin (< 250 MB, python:3.12-slim, USER 1000)
+# İmajı derleyin (274 MB < 1 GB, python:3.12-slim, USER 1000)
 docker build -t auto-qa-engine:v-vize .
 
 # Container'ı başlatın
 docker run --rm -p 8080:8080 \
   -e PORT=8080 \
   -e PLATFORM_SIGNING_SECRET="test-secret" \
-  -e LLM_BASE_URL="http://localhost:9999/v1" \
+  -e LLM_BASE_URL="" \
   -e LLM_API_KEY="test-key" \
   auto-qa-engine:v-vize
 ```
@@ -141,7 +141,7 @@ curl http://localhost:8080/health
 # Tüm birim, sözleşme, regresyon ve uçtan uca testleri çalıştırın
 python -m pytest tests independent_tests -v
 
-# 34 senaryoluk Eval setini (evals/cases.yaml + FakeLLMServer) çalıştırın
+# 38 senaryoluk Eval setini (evals/cases.yaml + FakeLLMServer) çalıştırın
 python evals/run_evals.py
 
 # Rehber Ek C teslim öncesi doğrulama ve entegrasyon lint betiklerini çalıştırın
@@ -157,7 +157,7 @@ python scripts/lint_integrations.py
 | :--- | :---: | :--- |
 | **Çalışırlık ve Sözleşme Uyumu** | 20 | [`Dockerfile`](Dockerfile) (`USER 1000`), [`src/main.py`](src/main.py) (`/health` < 2s, `/v1/invoke`), [`tests/test_contract.py`](tests/test_contract.py) |
 | **Fonksiyonel Değer** | 20 | [`src/parser.py`](src/parser.py) (OpenAPI 3.x & Swagger 2.0), [`src/planner.py`](src/planner.py) (ODG), [`src/generator.py`](src/generator.py), [`src/validator.py`](src/validator.py) (AST) |
-| **Eval Seti** | 15 | [`evals/cases.yaml`](evals/cases.yaml) (34 senaryo: 8 normal, 11 edge, 4 out_of_scope, 11 attack) ve [`EVAL_REPORT.md`](EVAL_REPORT.md) |
+| **Eval Seti** | 15 | [`evals/cases.yaml`](evals/cases.yaml) (38 senaryo: 10 normal, 12 edge, 4 out_of_scope, 12 attack) ve [`EVAL_REPORT.md`](EVAL_REPORT.md) |
 | **Güvenlik** | 15 | [`src/security.py`](src/security.py) (Constant-time HMAC, 300s replay, SSRF engelleme, Bölüm 4.3 kart/CVV/TCKN filtresi, AST RCE engelleme) |
 | **Entegrasyon Talimatları** | 15 | [`integrations/common.md`](integrations/common.md), [`integrations/claude-code.md`](integrations/claude-code.md), [`integrations/codex.md`](integrations/codex.md), [`integrations/cursor.mdc`](integrations/cursor.mdc) |
 | **Dokümantasyon ve Vitrin** | 10 | [`README.md`](README.md), [`docs/DESCRIPTION.md`](docs/DESCRIPTION.md), [`agent.yaml`](agent.yaml), `assets/` |
@@ -176,14 +176,12 @@ Teslimden önce proje sahibi tarafından bizzat çalıştırılması gereken ad�
    ```bash
    docker build -t auto-qa-engine:v-vize .
    ```
-4. Git deposunu başlatın, tüm dosyaları commitleyin, GitHub'a gönderin ve `v-vize` etiketini (tag) oluşturun:
+4. Değişiklikleri doğrulayıp `v-vize` etiketini (tag) oluşturun ve GitHub'a gönderin:
    ```bash
-   git init
    git add .
    git status   # .env veya kişisel anahtar olmadığından emin olun
    git commit -m "feat: release auto-qa-engine (spec_version 1.1) for v-vize"
    git branch -M main
-   git remote add origin https://github.com/<GITHUB_KULLANICI_ADINIZ>/auto-qa-engine.git
    git push -u origin main
    git tag v-vize
    git push origin v-vize
@@ -193,4 +191,4 @@ Teslimden önce proje sahibi tarafından bizzat çalıştırılması gereken ad�
 
 ## 7. Geliştirici ve Katkı Beyanı
 
-- **Geliştirici:** Berkay (Bireysel Proje — Mimari tasarım, deterministik ODG motoru, güvenlik katmanı, AST doğrulayıcı, 34 senaryoluk eval seti ve entegrasyon dokümantasyonu.)
+- **Geliştirici:** Berkay (`bbsine` — Bireysel Proje: mimari tasarım, deterministik ODG motoru, güvenlik katmanı, AST doğrulayıcı, 38 senaryoluk eval seti ve entegrasyon dokümantasyonu.)

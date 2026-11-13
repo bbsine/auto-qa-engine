@@ -57,12 +57,12 @@
 
 ---
 
-## Phase 3: Contract Tests, Unit Tests & 35-Scenario Eval Suite
+## Phase 3: Contract Tests, Unit Tests & 38-Scenario Eval Suite
 - [x] **`tests/test_contract.py` (Mandatory Platform Contract Tests)**
-- [x] **`tests/test_engine.py` & Regression Suites (`test_regressions_round1..3.py`, `test_swagger2.py`, `test_form_bodies_and_base_path.py`, `test_assets.py`, `test_docs_examples.py`, `test_check_submission.py`, `test_lint_integrations.py`)**
-- [x] **`evals/cases.yaml` (35 Evaluation Scenarios: 9 `normal`, 11 `edge`, 4 `out_of_scope`, 11 `attack`)**
+- [x] **`tests/test_engine.py` & Regression Suites (`test_regressions_round1..4.py`, `test_swagger2.py`, `test_form_bodies_and_base_path.py`, `test_assets.py`, `test_docs_examples.py`, `test_check_submission.py`, `test_lint_integrations.py`)**
+- [x] **`evals/cases.yaml` (38 Evaluation Scenarios: 10 `normal`, 12 `edge`, 4 `out_of_scope`, 12 `attack`)**
 - [x] **`EVAL_REPORT.md`**:
-  - Execute all 35 evaluation scenarios (including live `FakeLLMServer` cases) and generate the root-level `EVAL_REPORT.md`.
+  - Execute all 38 evaluation scenarios (including live `FakeLLMServer` cases) and generate the root-level `EVAL_REPORT.md`.
 
 ---
 
@@ -78,9 +78,9 @@
 
 ## Phase 5: Automated Submission Verification & Manual Owner Release (`v-vize`)
 - [x] Run full `pytest` suite (`tests/` + `independent_tests/`) and verify 100% pass rate.
-- [x] Run `evals/run_evals.py` (`35/35` scenarios) and verify `EVAL_REPORT.md` is up to date.
+- [x] Run `evals/run_evals.py` (`38/38` scenarios) and verify `EVAL_REPORT.md` is up to date.
 - [x] Run `scripts/check_submission.py` and `scripts/lint_integrations.py` against `spec_version 1.1` Appendix C checklist.
-- [ ] **[Manual Step for Owner]** Verify `author.github` in `agent.yaml`.
-- [ ] **[Manual Step for Owner]** Run the integration instructions (`integrations/claude-code.md`, `codex.md`, or `cursor.mdc`) on two real external projects and fill the verification table in `integrations/common.md` Section 4.
-- [ ] **[Manual Step for Owner]** Build and smoke-test the Docker image (`docker build -t auto-qa-engine:v-vize .`).
+- [x] Verify `author.github` in `agent.yaml` (`bbsine`).
+- [x] Run the integration instructions (`integrations/claude-code.md`, `codex.md`, or `cursor.mdc`) on two real external projects (Python/FastAPI and Node.js/Express) and fill the verification table in `integrations/common.md` Section 4.
+- [x] Build and smoke-test the Docker image (`docker build -t auto-qa-engine:v-vize .`, `< 1 GB`, `/health` cold-start `< 20s`).
 - [ ] **[Manual Step for Owner]** Initialize git, commit all deliverables, push to GitHub, and tag release `v-vize` (see `README.md` Section 6).

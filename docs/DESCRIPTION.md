@@ -105,7 +105,7 @@ OpenAPI şemasını ve mevcut test kodunuzu (`existing_test_code`) AST çağrı 
 | `test_framework` | `string` (`pytest-httpx` \| `pytest-requests`) | `pytest-httpx` | Üretilecek test kodunun HTTP istemci şablonu. |
 | `default_locale` | `string` (`tr-TR` \| `en-US`) | `tr-TR` | Sentetik verilerin (isim, şehir, e-posta, metin) yerel dili. |
 | `min_coverage_pct` | `integer` (`0`–`100`) | `80` | `analyze_coverage` operasyonunda CI geçişi için gereken minimum kapsama yüzdesi. |
-| `fail_on_missing_auth` | `boolean` | `false` | Kimlik doğrulama şeması olmayan yazma uç noktalarında `needs_review` durumu döndürür. |
+| `fail_on_missing_auth` | `boolean` | `false` | Kimlik doğrulama (`security`) şeması tanımlı olmayan herhangi bir uç noktada (`GET` dahil tüm metotlar) `needs_review` durumu döndürür. |
 
 ---
 

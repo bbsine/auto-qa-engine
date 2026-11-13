@@ -25,7 +25,7 @@ Lütfen aşağıdaki adımları sırasıyla uygula:
    - `generate_tests` yanıtındaki `output.odg_plan` adımlarını (Producer $\to$ Consumer sıralamasını) konsola özet tablo olarak yazdır.
    - Yanıttaki `output.test_code` (veya `artifacts[0].content`) içeriğini `tests/integration/test_generated_api.py` dosyasına kaydet.
    - Yanıttaki `output.mock_data` içeriğini `tests/integration/fixtures_mock_data.json` olarak kaydet.
-   - Agent çağrılarında 30 saniye zaman aşımı (`timeout`) tanımla; bağlantı hatası durumunda mevcut yerel `pytest` testlerini çalıştırmaya devam eden güvenli bir geri dönüş (fallback) uygula.
+   - Agent çağrılarında 60 saniye zaman aşımı (`timeout`) tanımla; bağlantı hatası durumunda mevcut yerel `pytest` testlerini çalıştırmaya devam eden güvenli bir geri dönüş (fallback) uygula.
 
 5. **Doğrulama Adımı:**
    - `{{SAMPLE_INPUT}}` örnek girdisini kullanarak entegrasyon betiğini veya testini çalıştır (`PLATFORM_SECRET_KEY` tanımlı değilse testi atlayıp uyarı ver).

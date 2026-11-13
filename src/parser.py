@@ -128,24 +128,53 @@ def resolve_schema_refs(
         return resolved
 
     result: dict[str, Any] = {}
+    all_of_subs: list[Any] | None = None
     for k, v in node.items():
-        if k in ("allOf", "anyOf", "oneOf") and isinstance(v, list):
-            resolved_sub = [resolve_schema_refs(sub, root, visited, depth + 1) for sub in v]
-            if k == "allOf":
-                merged: dict[str, Any] = {"type": "object", "properties": {}, "required": []}
-                for sub in resolved_sub:
-                    if isinstance(sub, dict):
-                        if isinstance(sub.get("properties"), dict):
-                            merged["properties"].update(sub["properties"])
-                        if isinstance(sub.get("required"), list):
-                            for req_field in sub["required"]:
-                                if isinstance(req_field, str) and req_field not in merged["required"]:
-                                    merged["required"].append(req_field)
-                result.update(merged)
-            else:
-                result[k] = resolved_sub
+        if k == "allOf" and isinstance(v, list):
+            all_of_subs = [resolve_schema_refs(sub, root, visited, depth + 1) for sub in v]
+        elif k in ("anyOf", "oneOf") and isinstance(v, list):
+            result[k] = [resolve_schema_refs(sub, root, visited, depth + 1) for sub in v]
         else:
             result[k] = resolve_schema_refs(v, root, visited, depth + 1)
+
+    if all_of_subs is not None:
+        merged_props: dict[str, Any] = {}
+        merged_req: list[str] = []
+        inferred_type: Any = None
+        for sub in all_of_subs:
+            if not isinstance(sub, dict):
+                continue
+            if inferred_type is None and "type" in sub:
+                inferred_type = sub["type"]
+            if isinstance(sub.get("properties"), dict):
+                merged_props.update(sub["properties"])
+            if isinstance(sub.get("required"), list):
+                for req_field in sub["required"]:
+                    if isinstance(req_field, str) and req_field not in merged_req:
+                        merged_req.append(req_field)
+            for sk, sv in sub.items():
+                if sk not in ("properties", "required", "type") and sk not in result:
+                    result[sk] = sv
+
+        sibling_props = result.get("properties")
+        if isinstance(sibling_props, dict):
+            merged_props.update(sibling_props)
+        if merged_props or isinstance(sibling_props, dict):
+            result["properties"] = merged_props
+
+        sibling_req = result.get("required")
+        if isinstance(sibling_req, list):
+            for req_field in sibling_req:
+                if isinstance(req_field, str) and req_field not in merged_req:
+                    merged_req.append(req_field)
+        if merged_req or isinstance(sibling_req, list):
+            result["required"] = merged_req
+
+        if "type" not in result:
+            if inferred_type is not None:
+                result["type"] = inferred_type
+            elif "properties" in result:
+                result["type"] = "object"
     return result
 
 

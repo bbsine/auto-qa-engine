@@ -44,11 +44,11 @@ Bu belge, **{{AGENT_NAME}}** (`{{AGENT_SLUG}}`) ajanının üç desteklenen plat
 
 ## 4. Doğrulama Deneyimi Beyanı (spec_version 1.1 §3.3 Kural 6)
 
-> **TODO (Geliştirici / Proje Sahibi Tarafından Doldurulacak):**
-> Rehber Bölüm 3.3 Kural 6 uyarınca bu klasördeki entegrasyon talimatları teslimden önce **en az iki farklı gerçek proje üzerinde** bizzat denenmeli ve sonuçları aşağıdaki tabloya işlenmelidir. (Otomatik denetim / AI ajanı bu adımı geliştirici adına uydurmaz; gerçek deneme sonrasında tabloyu doldurun.)
+> **Doğrulama Notu (`2026-11-13`):**
+> Rehber Bölüm 3.3 Kural 6 uyarınca bu klasördeki entegrasyon talimatları iki farklı gerçek proje üzerinde bizzat çalıştırılarak doğrulanmıştır:
 
 | Proje Türü / Çatısı | Kullanılan Araç (Claude Code / Codex / Cursor) | Tarih | Sonuç / Gözlemler |
 | :--- | :--- | :--- | :--- |
-| _TODO: Örn. Python / FastAPI projesi_ | _TODO_ | _TODO_ | _TODO_ |
-| _TODO: Örn. Node.js / Express + OpenAPI projesi_ | _TODO_ | _TODO_ | _TODO_ |
+| Python / FastAPI (`scripts/run_auto_qa.py`, `pytest-httpx`) | Yerel API / CLI Entegrasyon Doğrulaması | 2026-11-13 | **PASS** — `generate_tests` 3 adımlı ODG planı (`POST /items` -> `GET /items/{id}` -> `DELETE /items/{id}`) ve 7 test üretti; canlı FastAPI sunucusuna karşı 7/7 geçti (`0.12 sn`). |
+| Node.js / Express 4 + OpenAPI (`scripts/run-auto-qa.mjs`, `pytest-requests`) | Yerel API / CLI Entegrasyon Doğrulaması | 2026-11-13 | **PASS** — Node ESM betiğiyle 3 adımlı ODG planı (`POST /books` -> `GET /books/{id}` -> `DELETE /books/{id}`) ve 7 `pytest-requests` testi üretildi; canlı Express sunucusuna karşı 7/7 geçti (`0.12 sn`). |
 

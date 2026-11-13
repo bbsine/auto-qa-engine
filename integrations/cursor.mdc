@@ -11,10 +11,11 @@ alwaysApply: false
     <operations>{{OPERATIONS}}</operations>
   </meta>
   <requirements>
+    <item>Önce projenin dilini, çatısını (`pyproject.toml`/`requirements.txt` veya `package.json`) ve mevcut OpenAPI/Swagger şemasını (`openapi.yaml`/`openapi.json`/`swagger.json`) tespit et; yardımcı istemci betiğini projeye uygun dile (`scripts/run_auto_qa.py` veya `scripts/run-auto-qa.mjs`) yerleştir.</item>
     <item>OpenAPI şeması (openapi.yaml / openapi.json) veya API rotaları güncellendiğinde {{AGENT_SLUG}} ajanının `generate_tests` veya `analyze_coverage` operasyonunu kullanarak entegrasyon testlerini güncelle.</item>
-    <item>Kanal seçimi: PR/Push doğrulaması için GitHub Actions (`platform-tld/agent-action@v1`, `fail-on: fail`), etkileşimli geliştirme için MCP (`https://mcp.platform.tld/{{AGENT_SLUG}}`), otomasyon betikleri için REST (`POST https://api.platform.tld/v1/agents/{{AGENT_SLUG}}/invoke`) kullan.</item>
+    <item>Kanal seçimi: PR/Push doğrulaması için GitHub Actions (`platform-tld/agent-action@v1`, `fail-on: fail`), etkileşimli geliştirme için MCP (`https://mcp.platform.tld/{{AGENT_SLUG}}`), otomasyon betikleri için REST (`POST https://api.platform.tld/v1/agents/{{AGENT_SLUG}}/invoke`, 60 sn zaman aşımı ve yerel test fallback'i) kullan.</item>
     <item>Kimlik doğrulama anahtarını yalnızca `PLATFORM_SECRET_KEY` ortam değişkeninden oku; `.env` dosyasında yalnızca boş `PLATFORM_SECRET_KEY=` satırı oluştur ve `.env` dosyasının `.gitignore` içinde olduğunu kontrol et. Gizli anahtarı asla istemci koduna veya repoya yazma.</item>
     <item>`generate_tests` çıktısındaki `output.odg_plan` üretici-tüketici (POST -> GET -> PUT -> DELETE) sırasını koru ve `output.test_code` içeriğini `tests/integration/test_generated_api.py` dosyasına kaydet.</item>
-    <item>Girdi şemalarında gerçek kredi kartı numarası, CVV veya kişisel veri (KVKK) gönderme; doğrulama adımında `{{SAMPLE_INPUT}}` ile `output.summary.ast_valid == true` sonucunu kontrol et.</item>
+    <item>Girdi şemalarında gerçek kredi kartı numarası, CVV veya kişisel veri (KVKK) gönderme; doğrulama adımında `{{SAMPLE_INPUT}}` ile canlı çağrı sonucunda `status == "ok"` ve `output.summary.ast_valid == true` olduğunu kontrol et.</item>
   </requirements>
 </rule>

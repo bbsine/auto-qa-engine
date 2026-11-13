@@ -18,14 +18,14 @@ does one-shot syntax repair.
 ## Commands
 ```bash
 python -m pip install -r requirements.txt
-export PLATFORM_SIGNING_SECRET=test-secret LLM_BASE_URL=http://localhost:9999/v1 LLM_API_KEY=test
+export PLATFORM_SIGNING_SECRET=test-secret LLM_BASE_URL="" LLM_API_KEY=test
 uvicorn src.main:app --host 0.0.0.0 --port 8080
-python -m pytest -v                 # tests/test_contract.py + tests/test_engine.py
-python evals/run_evals.py           # 24 scenarios in evals/cases.yaml
+python -m pytest -v                 # all unit, contract, regression & E2E tests
+python evals/run_evals.py           # 38 scenarios in evals/cases.yaml
 docker build -t auto-qa-engine:v-vize . && docker run --rm -p 8080:8080 \
-  -e PLATFORM_SIGNING_SECRET=test-secret -e LLM_BASE_URL=http://localhost:9999/v1 -e LLM_API_KEY=test auto-qa-engine:v-vize
+  -e PLATFORM_SIGNING_SECRET=test-secret -e LLM_BASE_URL="" -e LLM_API_KEY=test auto-qa-engine:v-vize
 ```
-Note: `LLM_BASE_URL` containing `localhost:9999` disables the LLM entirely (deterministic mode).
+Note: leaving `LLM_BASE_URL` (or `LLM_API_KEY`) unset/empty disables the LLM client (deterministic mode).
 
 ## Conventions & hard rules (see contract_rules.md)
 - Never put personal API keys, `.env` files, or `sk_` placeholders in the repo or `integrations/`.

@@ -58,8 +58,18 @@ class FakeLLMServer:
                 if mode == "slow_timeout":
                     time.sleep(0.6)
 
-                # Extract operation_ids from the user prompt if present
-                op_ids = re.findall(r'"operation_id"\s*:\s*"([^"]+)"', raw_body)
+                # Extract operation_ids from the decoded chat messages (JSON body escapes quotes inside strings)
+                prompt_text = raw_body
+                try:
+                    req_obj = json.loads(raw_body)
+                    if isinstance(req_obj, dict) and isinstance(req_obj.get("messages"), list):
+                        prompt_text = "\n".join(
+                            str(m.get("content", "")) for m in req_obj["messages"] if isinstance(m, dict)
+                        )
+                except Exception:
+                    prompt_text = raw_body
+
+                op_ids = re.findall(r'"operation_id"\s*:\s*"([^"]+)"', prompt_text)
                 if not op_ids:
                     op_ids = ["create_item", "create_user", "list_items", "debug_env"]
 

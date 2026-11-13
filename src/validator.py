@@ -197,7 +197,7 @@ def _emit_body_request(
     file_fields: set[str],
     apply_odg_state: bool = False,
 ) -> None:
-    """Append the payload assignment and the httpx call using json=, data= or data= + files= (all values via repr())."""
+    """Append the payload assignment and the client call using json=, data= or data= + files= (all values via repr())."""
     if encoding == "json":
         lines.append(f"    {var_name} = {repr(payload)}")
         if apply_odg_state:
@@ -221,12 +221,26 @@ def _emit_body_request(
         lines.append(f"    response = api_client.{method_lower}(url, data={var_name})")
 
 
+def resolve_step_param_bindings(step: PlannedStep) -> dict[str, str]:
+    """Compute complete path-parameter -> ODG_STATE variable bindings for a planned step."""
+    op = step.operation
+    param_bindings: dict[str, str] = dict(step.param_bindings)
+    for param in op.parameters:
+        if param.location == "path" and param.name not in param_bindings:
+            param_bindings[param.name] = resolve_path_param_var(op, param.name)
+    for raw_var in re.findall(r"\{([^}]+)\}", op.path):
+        if raw_var not in param_bindings:
+            param_bindings[raw_var] = resolve_path_param_var(op, raw_var)
+    return param_bindings
+
+
 def build_deterministic_pytest_suite(
     plan: list[PlannedStep],
     mock_datasets: dict[str, dict[str, Any]],
     base_url: str = "http://localhost:8000",
     include_negative_tests: bool = True,
     include_security_tests: bool = True,
+    test_framework: str = "pytest-httpx",
 ) -> str:
     """Compile a 100% syntactically valid, injection-safe Pytest suite from the ODG plan and mock datasets.
 
@@ -238,11 +252,12 @@ def build_deterministic_pytest_suite(
     - Unknown-ID and unauthorized probes are emitted as `*_security_unknown_id_and_auth`.
     """
     safe_base_url = str(base_url or "http://localhost:8000").rstrip("/") or "http://localhost:8000"
+    use_requests = str(test_framework or "").strip().lower() == "pytest-requests"
     lines: list[str] = [
         '"""Auto-generated deterministic ODG integration & security test suite by auto-qa-engine."""',
         "",
         "import pytest",
-        "import httpx",
+        "import requests" if use_requests else "import httpx",
         "",
         f"BASE_URL = {json.dumps(safe_base_url)}",
         "",
@@ -262,13 +277,44 @@ def build_deterministic_pytest_suite(
         "        url = url.replace(token, val)",
         "    return url",
         "",
-        "",
-        "@pytest.fixture(scope='module')",
-        "def api_client():",
-        "    with httpx.Client(base_url=BASE_URL, timeout=10.0) as client:",
-        "        yield client",
-        "",
     ]
+
+    if use_requests:
+        lines.extend(
+            [
+                "",
+                "class _BaseUrlSession(requests.Session):",
+                '    """Session wrapper supporting base_url prefixing and a default timeout."""',
+                "",
+                "    def __init__(self, base_url: str, timeout: float = 10.0) -> None:",
+                "        super().__init__()",
+                "        self._base_url = base_url.rstrip('/')",
+                "        self._timeout = timeout",
+                "",
+                "    def request(self, method: str, url: str, **kwargs):",
+                "        target = url if url.startswith(('http://', 'https://')) else f'{self._base_url}{url}'",
+                "        kwargs.setdefault('timeout', self._timeout)",
+                "        return super().request(method, target, **kwargs)",
+                "",
+                "",
+                "@pytest.fixture(scope='module')",
+                "def api_client():",
+                "    with _BaseUrlSession(BASE_URL, timeout=10.0) as client:",
+                "        yield client",
+                "",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "@pytest.fixture(scope='module')",
+                "def api_client():",
+                "    with httpx.Client(base_url=BASE_URL, timeout=10.0) as client:",
+                "        yield client",
+                "",
+            ]
+        )
 
     produced_vars_so_far: set[str] = set()
 
@@ -290,13 +336,7 @@ def build_deterministic_pytest_suite(
         if not pos_codes:
             pos_codes = [201, 200] if op.method == "POST" else [200, 204]
 
-        param_bindings: dict[str, str] = dict(step.param_bindings)
-        for param in op.parameters:
-            if param.location == "path" and param.name not in param_bindings:
-                param_bindings[param.name] = resolve_path_param_var(op, param.name)
-        for raw_var in re.findall(r"\{([^}]+)\}", op.path):
-            if raw_var not in param_bindings:
-                param_bindings[raw_var] = resolve_path_param_var(op, raw_var)
+        param_bindings = resolve_step_param_bindings(step)
 
         bound_producer_keys = [
             k for k in step.consumes if isinstance(k, str) and k in produced_vars_so_far
@@ -331,7 +371,8 @@ def build_deterministic_pytest_suite(
             lines.append(f"    response = api_client.{method_lower}(url)")
 
         lines.append(f"    assert response.status_code in {repr(pos_codes)}")
-        lines.append("    if response.status_code != 204 and response.headers.get('content-type', '').startswith('application/json'):")
+        lines.append("    _ct = response.headers.get('content-type', '').split(';', 1)[0].strip().lower()")
+        lines.append("    if response.status_code != 204 and (_ct == 'application/json' or _ct.endswith('+json')):")
         lines.append("        data = response.json()")
         lines.append("        assert data is not None")
 
@@ -340,7 +381,9 @@ def build_deterministic_pytest_suite(
         if step.produces:
             prod_var = step.produces[0]
             dict_body_lines.append(
-                "            captured_id = data.get('id') or data.get('uuid') or data.get(" + repr(prod_var) + ")"
+                "            captured_id = next((data[k] for k in ('id', 'uuid', "
+                + repr(prod_var)
+                + ") if k in data and data[k] is not None), None)"
             )
             dict_body_lines.append("            if captured_id is not None:")
             dict_body_lines.append(f"                ODG_STATE[{repr(prod_var)}] = captured_id")
@@ -428,7 +471,7 @@ def build_deterministic_pytest_suite(
                 lines.append("    assert response.status_code < 500")
                 lines.append("    assert 'syntax error' not in response.text.lower()")
                 lines.append("")
-            elif param_bindings or op.parameters or op.security_required:
+            elif param_bindings or op.security_required:
                 lines.append(f"def test_step_{step.step:02d}_{op_id}_security_unknown_id_and_auth(api_client):")
                 lines.append(
                     f"    probe_url = _format_url({path_literal}, {bindings_literal}, override_val='nonexistent-unauthorized-id-999999')"

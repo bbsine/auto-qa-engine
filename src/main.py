@@ -27,11 +27,64 @@ app = FastAPI(
 )
 
 
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+
+def _http_error_code(status_code: int, detail_str: str) -> str:
+    """Map HTTP status codes and Starlette/auth messages to spec §2.3 error codes."""
+    lower = detail_str.lower()
+    if status_code == 401:
+        if "timestamp" in lower and "signature" not in lower:
+            return "invalid_timestamp"
+        if "signature" in lower:
+            return "invalid_signature"
+        return "unauthorized"
+    if status_code == 404:
+        return "not_found"
+    if status_code == 405:
+        return "method_not_allowed"
+    if status_code == 400:
+        return "bad_request"
+    if status_code == 422:
+        return "validation_error"
+    return f"http_{status_code}"
+
+
+def _format_http_error(exc: StarletteHTTPException) -> JSONResponse:
+    """Render any HTTPException in the standard {"error": {"code": ..., "message": ...}} envelope."""
+    headers = getattr(exc, "headers", None)
+    if isinstance(exc.detail, dict) and "error" in exc.detail:
+        return JSONResponse(exc.detail, status_code=exc.status_code, headers=headers)
+    msg = str(exc.detail or "HTTP error")
+    code = _http_error_code(exc.status_code, msg)
+    return JSONResponse(
+        {"error": {"code": code, "message": msg}},
+        status_code=exc.status_code,
+        headers=headers,
+    )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_envelope_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    """Ensure 401, 404, 405 and other HTTP errors return the {"error": {"code", "message"}} structure."""
+    return _format_http_error(exc)
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_envelope_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Ensure FastAPI request validation errors return the {"error": {"code", "message"}} structure."""
+    return JSONResponse(
+        {"error": {"code": "validation_error", "message": "Request validation failed."}},
+        status_code=422,
+    )
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Global catch-all exception handler: logs tenant_id/request_id + traceback without leaking exception text."""
-    if isinstance(exc, HTTPException):
-        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+    """Global catch-all exception handler: logs tenant_id/request_id without leaking exception text or tracebacks."""
+    if isinstance(exc, (HTTPException, StarletteHTTPException)):
+        return _format_http_error(exc)
 
     tenant_id = getattr(request.state, "tenant_id", None) or request.headers.get("X-Tenant-Id", "unknown")
     request_id = getattr(request.state, "request_id", None) or request.headers.get("X-Request-Id", "unknown")
@@ -40,7 +93,6 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
         tenant_id,
         request_id,
         type(exc).__name__,
-        exc_info=True,
     )
     return JSONResponse(
         {"error": {"code": "processing_failed", "message": "Request could not be processed."}},
@@ -164,7 +216,6 @@ async def invoke(request: Request) -> Any:
             tenant_id,
             request_id,
             type(exc).__name__,
-            exc_info=True,
         )
         return JSONResponse(
             {"error": {"code": "processing_failed", "message": "Request could not be processed."}},

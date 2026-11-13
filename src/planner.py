@@ -98,13 +98,36 @@ def _infer_produced_variables(op: OperationSpec) -> list[str]:
     singular = _singularize(op.resource_group)
     canonical_var = f"{singular}_id"
 
+    _NON_RESOURCE_ACTION_SEGMENTS = {
+        "login",
+        "logout",
+        "signin",
+        "signout",
+        "signup",
+        "register",
+        "token",
+        "refresh",
+        "verify",
+        "confirm",
+        "search",
+        "query",
+        "validate",
+        "check",
+        "health",
+        "ping",
+        "forgot-password",
+        "reset-password",
+    }
+
     if op.method == "POST":
+        has_explicit_nonempty_props = False
         # Check 200/201 response schemas for id-like properties
         for code in ("201", "200", "default"):
             schema = op.response_schemas.get(code)
             if isinstance(schema, dict):
                 props = schema.get("properties")
-                if isinstance(props, dict):
+                if isinstance(props, dict) and props:
+                    has_explicit_nonempty_props = True
                     for prop_name in props:
                         if prop_name.lower() in ("id", "uuid", "_id", canonical_var):
                             if canonical_var not in produced:
@@ -113,7 +136,14 @@ def _infer_produced_variables(op: OperationSpec) -> list[str]:
                             if prop_name.lower() not in produced:
                                 produced.append(prop_name.lower())
         # Even if response schema omits explicit properties, a POST on a resource collection produces {resource}_id
-        if not op.path.rstrip("/").endswith("}") and canonical_var not in produced:
+        # (unless the schema already defines explicit non-ID fields or the tail segment is an action endpoint like /login).
+        last_segment = next((s.lower() for s in reversed(op.path.strip("/").split("/")) if s), "")
+        if (
+            not has_explicit_nonempty_props
+            and not op.path.rstrip("/").endswith("}")
+            and last_segment not in _NON_RESOURCE_ACTION_SEGMENTS
+            and canonical_var not in produced
+        ):
             produced.append(canonical_var)
 
     return produced
@@ -214,6 +244,33 @@ def build_odg_plan(parsed_spec: ParsedOpenAPISpec) -> list[PlannedStep]:
                 if prior.operation_id != d.operation_id:
                     dependencies[d.operation_id].add(prior.operation_id)
 
+    # 2b. Child-before-parent DELETE ordering across resource hierarchies
+    def _norm_segments(path: str) -> list[str]:
+        return [
+            "*" if (seg.startswith("{") and seg.endswith("}")) else seg.lower()
+            for seg in path.strip("/").split("/")
+            if seg
+        ]
+
+    all_deletes = [op for op in ops if op.method == "DELETE"]
+    for d_parent in all_deletes:
+        parent_cons = set(consumed_by_op[d_parent.operation_id])
+        parent_segs = _norm_segments(d_parent.path)
+        parent_prefix = parent_segs[:-1] if parent_segs and parent_segs[-1] == "*" else parent_segs
+        for d_child in all_deletes:
+            if d_parent.operation_id == d_child.operation_id:
+                continue
+            child_cons = set(consumed_by_op[d_child.operation_id])
+            child_segs = _norm_segments(d_child.path)
+            is_strict_consumed_child = bool(parent_cons) and parent_cons < child_cons
+            is_strict_path_child = (
+                bool(parent_prefix)
+                and len(child_segs) > len(parent_segs)
+                and child_segs[: len(parent_prefix)] == parent_prefix
+            )
+            if is_strict_consumed_child or is_strict_path_child:
+                dependencies[d_parent.operation_id].add(d_child.operation_id)
+
     # 3. Kahn's topological sort with deterministic tie-breaking and cycle fallback
     remaining: set[str] = {op.operation_id for op in ops}
     ordered_ids: list[str] = []
@@ -221,9 +278,14 @@ def build_odg_plan(parsed_spec: ParsedOpenAPISpec) -> list[PlannedStep]:
 
     def _sort_key(op_id: str) -> tuple[int, int, int]:
         op_obj = op_map[op_id]
+        depth_tiebreak = (
+            -len(consumed_by_op[op_id])
+            if op_obj.method == "DELETE"
+            else len(consumed_by_op[op_id])
+        )
         return (
             METHOD_PRIORITY.get(op_obj.method, 99),
-            len(consumed_by_op[op_id]),
+            depth_tiebreak,
             original_index[op_id],
         )
 

@@ -10,14 +10,15 @@ Aşağıdaki bölümü projenizin kök dizinindeki `AGENTS.md` dosyasına ekleyi
 - **Amaç ve Operasyonlar:** Bu proje, OpenAPI v3.x şemalarından ODG (Operation Dependency Graph) sıralı Pytest entegrasyon testleri ve sentetik test verileri üretmek için `{{AGENT_SLUG}}` ajanını kullanır. Desteklenen operasyonlar: {{OPERATIONS}}
 - **Kanal Seçimi:**
   - Pull Request ve Push kontrollerinde `.github/workflows/auto-qa.yml` içindeki `platform-tld/agent-action@v1` (`fail-on: fail`) CI adımı kullanılır.
+  - Etkileşimli ajan görevlerinde MCP sunucusu (`https://mcp.platform.tld/{{AGENT_SLUG}}`, `Authorization: Bearer $PLATFORM_SECRET_KEY`) kullanılır.
   - Yerel test üretiminde `POST https://api.platform.tld/v1/agents/{{AGENT_SLUG}}/invoke` uç noktası yalnızca sunucu/CLI betiğinden çağrılır.
 - **Anahtar Güvenliği:**
   - Gizli anahtar yalnızca `PLATFORM_SECRET_KEY` ortam değişkeninden (`os.environ["PLATFORM_SECRET_KEY"]` veya `process.env.PLATFORM_SECRET_KEY`) okunur.
   - Gizli anahtarlar asla istemci koduna, kaynak kod deposuna, test dosyalarına veya loglara yazılmaz.
   - `.env` dosyasında yalnızca boş `PLATFORM_SECRET_KEY=` tanımı yer alır ve `.env` mutlaka `.gitignore` içinde tutulur.
 - **Çıktı ve Fallback Kuralları:**
-  - `generate_tests` operasyonundan dönen `output.test_code` çıktısı `tests/integration/test_generated_api.py` dosyasına yazılır.
-  - Ajan çağrılarında zaman aşımı 30 saniyedir; ajan erişilemezse mevcut yerel test paketi bloklanmadan çalıştırılır.
+  - Projedeki dil/çerçeve (`pyproject.toml`/`requirements.txt` veya `package.json`) ve OpenAPI şeması (`openapi.yaml`/`swagger.json`) tespit edilir; `generate_tests` çıktısı `tests/integration/test_generated_api.py` (Python betiği `scripts/run_auto_qa.py`, Node.js betiği `scripts/run-auto-qa.mjs`) dosyasına yazılır.
+  - Ajan çağrılarında zaman aşımı 60 saniyedir (`generate_tests` için `timeout_s: 60`); ajan erişilemezse mevcut yerel test paketi bloklanmadan çalıştırılır.
 ```
 
 ---

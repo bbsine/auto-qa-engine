@@ -42,12 +42,17 @@ _IBAN_RE = re.compile(r"\b[A-Z]{2}\d{2}(?:[ -]?\d{4}){4,7}(?:[ -]?\d{1,4})?\b", 
 
 # Sensitive payment & card security code fields (JSON, escaped JSON, YAML, or key=value format, §4.3 red line)
 _SENSITIVE_PAYMENT_RE = re.compile(
-    r"(?i)(?:\\?[\"'])?\b("
-    r"cvv2?|cvc2?|cid|security_code|guvenlik_kodu|"
+    r"(?i)(?:\\?[\"'])?\b(?:"
+    r"(?:cvv2?|cvc2?|cid|security_code|guvenlik_kodu|"
     r"card_number|kart_numarasi|pan_number|"
-    r"banka_sifresi|bank_password|card_pin|"
-    r"son_kullanma_tarihi|expiry_date|card_expiry|expiration_date|expiry|exp_date|expiration"
-    r")\b(?:\\?[\"'])?\s*[:=]\s*(?:\\?[\"'])?(?:\d{2,4}(?:[/.-]\d{2,4})?|\d{3,19})(?:\\?[\"'])?"
+    r"banka_sifresi|bank_password|card_pin)\b(?:\\?[\"'])?\s*[:=]\s*(?:\\?[\"'])?\d{3,19}"
+    r"|(?:son_kullanma_tarihi|expiry_date|card_expiry|expiration_date|expiry|exp_date|expiration)\b"
+    r"(?:\\?[\"'])?\s*[:=]\s*(?:\\?[\"'])?(?:"
+    r"(?:0?[1-9]|1[0-2])\s*[/.-]\s*\d{2,4}"
+    r"|\d{4}\s*[/.-]\s*(?:0?[1-9]|1[0-2])"
+    r"|(?:0[1-9]|1[0-2])(?:2[4-9]|3\d)"
+    r")"
+    r")(?:\\?[\"'])?"
 )
 
 # Match both 4-hex (\u0030) and 8-hex (\U00000030) single- or double-escaped Unicode hex sequences

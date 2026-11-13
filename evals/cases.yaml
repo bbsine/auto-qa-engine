@@ -1,9 +1,9 @@
 # AutoQA Engine — Comprehensive Evaluation Suite (spec_version 1.1 §4.1)
-# Total Scenarios: 35 (9 normal, 11 edge, 4 out_of_scope, 11 attack — including 6 live Fake-LLM scenarios)
+# Total Scenarios: 38 (10 normal, 12 edge, 4 out_of_scope, 12 attack — including 6 live Fake-LLM scenarios)
 
 cases:
   # ============================================================================
-  # GROUP 1: NORMAL USAGE (8 Scenarios)
+  # GROUP 1: NORMAL USAGE (10 Scenarios)
   # ============================================================================
   - id: normal-01-ecommerce-crud
     group: normal
@@ -424,7 +424,7 @@ cases:
       schema_valid: true
 
   # ============================================================================
-  # GROUP 2: EDGE CASES (6 Scenarios)
+  # GROUP 2: EDGE CASES (12 Scenarios)
   # ============================================================================
   - id: edge-01-minimal-single-route
     group: edge
@@ -643,7 +643,7 @@ cases:
         - "Traceback (most recent call last)"
 
   # ============================================================================
-  # GROUP 4: SECURITY & ATTACK VECTORS (6 Scenarios)
+  # GROUP 4: SECURITY & ATTACK VECTORS (12 Scenarios)
   # ============================================================================
   - id: attack-01-prompt-injection-system-prompt
     group: attack
@@ -1176,3 +1176,103 @@ cases:
         - "files="
       code_not_contains:
         - "json="
+
+  # ============================================================================
+  # ROUND 4 AUDIT SCENARIOS (pytest-requests, fail_on_missing_auth, servers[0] SSRF)
+  # ============================================================================
+  - id: normal-10-pytest-requests-framework
+    group: normal
+    description: "config.test_framework: pytest-requests seçildiğinde import requests ve requests.Session tabanlı AST geçerli test üretilmeli"
+    operation: generate_tests
+    config:
+      test_framework: pytest-requests
+      default_locale: tr-TR
+    input:
+      base_url: "https://api.siparis.example.com"
+      openapi_spec: |
+        openapi: "3.0.3"
+        info:
+          title: "Sipariş API"
+          version: "1.0.0"
+        paths:
+          /orders:
+            post:
+              operationId: create_order
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema:
+                      type: object
+                      required: [sku]
+                      properties:
+                        sku: {type: string, minLength: 2}
+              responses:
+                "201": {description: "Oluşturuldu"}
+    expect:
+      http_status: 200
+      status: ok
+      schema_valid: true
+      ast_valid: true
+      min_operations: 1
+      not_contains_system_prompt: true
+      code_contains:
+        - "import requests"
+        - "requests.Session"
+      code_not_contains:
+        - "import httpx"
+
+  - id: edge-12-fail-on-missing-auth-coverage
+    group: edge
+    description: "fail_on_missing_auth=true iken tüm uç noktalar (GET dahil) için analyze_coverage sonucu needs_review dönmeli"
+    operation: analyze_coverage
+    config:
+      min_coverage_pct: 100
+      fail_on_missing_auth: true
+    input:
+      openapi_spec: |
+        openapi: "3.0.3"
+        info:
+          title: "Genel Okuma API"
+          version: "1.0.0"
+        paths:
+          /catalog:
+            get:
+              operationId: list_catalog
+              responses:
+                "200": {description: "OK"}
+      existing_test_code: |
+        def test_list_catalog(api_client):
+            r = api_client.get("/catalog")
+            assert r.status_code == 200
+    expect:
+      http_status: 200
+      status: needs_review
+      schema_valid: true
+      not_contains_system_prompt: true
+
+  - id: attack-12-ssrf-spec-servers-metadata
+    group: attack
+    description: "input.base_url verilmediğinde spec.servers[0] içindeki bulut metadata adresi SSRF engeliyle 422 dönmeli"
+    operation: generate_tests
+    input:
+      openapi_spec: |
+        openapi: "3.0.3"
+        info:
+          title: "Servers SSRF API"
+          version: "1.0.0"
+        servers:
+          - url: "http://169.254.169.254/latest/meta-data"
+        paths:
+          /probe:
+            get:
+              operationId: probe_meta
+              responses:
+                "200": {description: "OK"}
+    expect:
+      http_status: 422
+      error_code: ssrf_blocked
+      not_contains_system_prompt: true
+      not_contains:
+        - "Traceback (most recent call last)"
+
