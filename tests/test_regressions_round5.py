@@ -89,7 +89,7 @@ def test_yaml_alias_bomb_rejected_quickly(layers: int) -> None:
     elapsed = time.perf_counter() - t0
 
     assert resp.status_code == 422
-    assert resp.json()["error"]["code"] == "invalid_openapi_syntax"
+    assert resp.json()["error"]["code"] == "spec_too_large"
     assert elapsed < 0.5, f"{layers}-layer YAML alias bomb took {elapsed:.2f}s (expected < 0.5s)"
 
 
@@ -120,7 +120,7 @@ def test_ref_dag_bomb_rejected_quickly_and_normal_yaml_anchor_works() -> None:
     r_bomb = _invoke(client, {"operation": "generate_tests", "input": {"openapi_spec": json.dumps(ref_bomb)}})
     elapsed = time.perf_counter() - t0
     assert r_bomb.status_code == 422
-    assert r_bomb.json()["error"]["code"] == "invalid_openapi_syntax"
+    assert r_bomb.json()["error"]["code"] == "spec_too_large"
     assert elapsed < 0.5
 
     # Legitimate small YAML anchor reuse must still succeed
@@ -435,3 +435,112 @@ def test_runtime_requirements_txt_excludes_test_only_packages() -> None:
                     assert alias.name.split(".")[0] not in ("pytest", "httpx", "requests", "PIL")
             elif isinstance(node, ast.ImportFrom) and node.module:
                 assert node.module.split(".")[0] not in ("pytest", "httpx", "requests", "PIL")
+
+
+# ---------------------------------------------------------------------------
+# Round 5 follow-up fixes: invalid_encoding, spec_too_large, concurrency cap
+# ---------------------------------------------------------------------------
+def test_lone_surrogate_returns_422_invalid_encoding_without_leaking_codec_message() -> None:
+    client = TestClient(app, raise_server_exceptions=False)
+    padding = "x" * 5500
+    spec_with_surrogate = (
+        '{"openapi":"3.0.3","info":{"title":"'
+        + padding
+        + '","version":"1"},"paths":{"/p":{"get":{"summary":"\ud800","responses":{"200":{"description":"OK"}}}}}}'
+    )
+    payload_short = json.dumps(
+        {"operation": "generate_tests", "input": {"openapi_spec": "bad\ud800text"}},
+        ensure_ascii=True,
+    ).encode("utf-8")
+    payload_long = json.dumps(
+        {"operation": "generate_tests", "input": {"openapi_spec": spec_with_surrogate}},
+        ensure_ascii=True,
+    ).encode("utf-8")
+
+    for raw in (payload_short, payload_long):
+        resp = client.post("/v1/invoke", content=raw, headers=_sign(raw))
+        assert resp.status_code == 422
+        err = resp.json()["error"]
+        assert err["code"] == "invalid_encoding"
+        combined = f"{err['code']} {err['message']}".lower()
+        assert "codec" not in combined
+        assert "can't encode" not in combined
+        assert "position" not in combined
+
+
+def test_1500_ops_with_40_field_anchor_returns_422_spec_too_large() -> None:
+    fields_yaml = "\n".join(f"      field_{k}: {{type: string}}" for k in range(40))
+    paths_yaml = "".join(
+        f"  /op_{i}:\n"
+        f"    get:\n"
+        f"      operationId: get_op_{i}\n"
+        f"      responses:\n"
+        f"        '200':\n"
+        f"          description: OK\n"
+        f"          content:\n"
+        f"            application/json:\n"
+        f"              schema: *shared_40\n"
+        for i in range(1500)
+    )
+    huge_anchor_yaml = (
+        'openapi: "3.0.3"\n'
+        'info: {title: Anchor40x1500, version: "1.0"}\n'
+        "x-shared: &shared_40\n"
+        "  type: object\n"
+        "  properties:\n"
+        f"{fields_yaml}\n"
+        f"paths:\n{paths_yaml}"
+    )
+
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = _invoke(client, {"operation": "generate_tests", "input": {"openapi_spec": huge_anchor_yaml}})
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "spec_too_large"
+
+
+def test_concurrent_heavy_requests_capped_by_semaphore_with_retry_after(monkeypatch) -> None:
+    monkeypatch.setenv("LLM_BASE_URL", "")
+    paths = {
+        f"/item_{i}": {
+            "post": {
+                "operationId": f"create_item_{i}",
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": ["name"],
+                                "properties": {"name": {"type": "string", "minLength": 2}},
+                            }
+                        }
+                    },
+                },
+                "responses": {"201": {"description": "Created"}},
+            }
+        }
+        for i in range(1200)
+    }
+    spec_str = json.dumps({"openapi": "3.0.3", "info": {"title": "Heavy1200", "version": "1"}, "paths": paths})
+    body_bytes = json.dumps({"operation": "generate_tests", "input": {"openapi_spec": spec_str}}).encode("utf-8")
+
+    with _UvicornThread(app) as base_url:
+        barrier = threading.Barrier(6)
+
+        def _fire() -> tuple[int, dict[str, str], dict[str, Any]]:
+            barrier.wait(timeout=5.0)
+            r = httpx.post(f"{base_url}/v1/invoke", content=body_bytes, headers=_sign(body_bytes), timeout=30.0)
+            return r.status_code, dict(r.headers), r.json()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+            futs = [pool.submit(_fire) for _ in range(6)]
+            results = [f.result(timeout=30.0) for f in futs]
+
+    statuses = [st for st, _, _ in results]
+    assert all(st != 500 for st in statuses)
+    assert any(st == 200 for st in statuses)
+    busy = [(st, hdrs, body) for st, hdrs, body in results if st == 429]
+    assert busy, f"Expected at least one 429 server_busy among concurrent heavy invokes, got {statuses}"
+    for _, hdrs, body in busy:
+        assert hdrs.get("retry-after") == "2"
+        assert body["error"]["code"] == "server_busy"

@@ -16,9 +16,9 @@ from src.security import contains_prohibited_payment_data, scan_object_for_sensi
 
 HTTP_METHODS = ("get", "post", "put", "patch", "delete", "options", "head")
 MAX_SCHEMA_DEPTH = 40
-MAX_ALIAS_EXPANDED_NODES = 200_000
-MAX_SPEC_TOTAL_NODES = 300_000
-MAX_REF_EXPANSION_NODES = 150_000
+MAX_ALIAS_EXPANDED_NODES = 120_000
+MAX_SPEC_TOTAL_NODES = 150_000
+MAX_REF_EXPANSION_NODES = 120_000
 
 
 @dataclass
@@ -81,7 +81,7 @@ def _validate_structure_bounds(root: Any) -> None:
     def _measure(node: Any, depth: int) -> int:
         nonlocal alias_reused_nodes
         if depth > MAX_SCHEMA_DEPTH * 2:
-            raise ValueError("invalid_openapi_syntax: Şema derinliği izin verilen sınırı aşıyor.")
+            raise ValueError("spec_too_large: Şema derinliği izin verilen sınırı aşıyor.")
         if not isinstance(node, (dict, list)):
             return 1
         obj_id = id(node)
@@ -92,7 +92,7 @@ def _validate_structure_bounds(root: Any) -> None:
             alias_reused_nodes += reused
             if alias_reused_nodes > MAX_ALIAS_EXPANDED_NODES:
                 raise ValueError(
-                    "invalid_openapi_syntax: Şema boyutu veya YAML alias genişlemesi izin verilen sınırı aşıyor."
+                    "spec_too_large: Şema boyutu veya YAML alias genişlemesi izin verilen sınırı aşıyor."
                 )
             return reused
         active.add(obj_id)
@@ -102,14 +102,14 @@ def _validate_structure_bounds(root: Any) -> None:
                 total += 1 + _measure(v, depth + 1)
                 if total > MAX_SPEC_TOTAL_NODES or alias_reused_nodes > MAX_ALIAS_EXPANDED_NODES:
                     raise ValueError(
-                        "invalid_openapi_syntax: Şema boyutu veya YAML alias genişlemesi izin verilen sınırı aşıyor."
+                        "spec_too_large: Şema boyutu veya YAML alias genişlemesi izin verilen sınırı aşıyor."
                     )
         else:
             for item in node:
                 total += _measure(item, depth + 1)
                 if total > MAX_SPEC_TOTAL_NODES or alias_reused_nodes > MAX_ALIAS_EXPANDED_NODES:
                     raise ValueError(
-                        "invalid_openapi_syntax: Şema boyutu veya YAML alias genişlemesi izin verilen sınırı aşıyor."
+                        "spec_too_large: Şema boyutu veya YAML alias genişlemesi izin verilen sınırı aşıyor."
                     )
         active.remove(obj_id)
         memo_size[obj_id] = total
@@ -182,7 +182,7 @@ def _resolve_json_pointer(
         cached_schema, node_weight = _ref_cache[ref]
         _budget[0] += node_weight
         if _budget[0] > MAX_REF_EXPANSION_NODES:
-            raise ValueError("invalid_openapi_syntax: Şema referans ($ref) genişlemesi sınırı aşıyor.")
+            raise ValueError("spec_too_large: Şema referans ($ref) genişlemesi izin verilen sınırı aşıyor.")
         return copy.deepcopy(cached_schema)
 
     visited = visited | {ref}
@@ -224,7 +224,7 @@ def resolve_schema_refs(
     if isinstance(node, list):
         _budget[0] += 1
         if _budget[0] > MAX_REF_EXPANSION_NODES:
-            raise ValueError("invalid_openapi_syntax: Şema referans ($ref) genişlemesi sınırı aşıyor.")
+            raise ValueError("spec_too_large: Şema referans ($ref) genişlemesi izin verilen sınırı aşıyor.")
         return [
             resolve_schema_refs(item, root, visited, depth + 1, _budget=_budget, _ref_cache=_ref_cache)
             for item in node
@@ -235,7 +235,7 @@ def resolve_schema_refs(
 
     _budget[0] += 1
     if _budget[0] > MAX_REF_EXPANSION_NODES:
-        raise ValueError("invalid_openapi_syntax: Şema referans ($ref) genişlemesi sınırı aşıyor.")
+        raise ValueError("spec_too_large: Şema referans ($ref) genişlemesi izin verilen sınırı aşıyor.")
 
     if "$ref" in node and isinstance(node["$ref"], str):
         resolved = copy.deepcopy(
