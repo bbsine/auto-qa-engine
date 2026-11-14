@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+import time
 from typing import Any
 
 from src.planner import PlannedStep, resolve_path_param_var
@@ -45,44 +46,99 @@ def strip_markdown_fences(code: str) -> str:
     return text
 
 
-def validate_test_syntax(code: str) -> tuple[bool, str | None]:
-    """Validate Python syntax using ast.parse() and verify AST safety rules.
-
-    Returns:
-        (True, None) if the code is valid, safe Python.
-        (False, error_message) if syntax error, empty code, or forbidden unsafe AST call is found.
-    """
-    cleaned = strip_markdown_fences(code)
-    if not cleaned:
-        return False, "SyntaxError: Generated code is empty"
-
-    try:
-        tree = ast.parse(cleaned)
-    except (SyntaxError, IndentationError) as exc:
-        line_info = f"line {exc.lineno}, col {exc.offset}" if exc.lineno else "unknown line"
-        return False, f"{type(exc).__name__} at {line_info}: {exc.msg} ({exc.text!r})"
-    except Exception as exc:
-        return False, f"ASTParseError: {exc}"
-
-    # Inspect AST for forbidden imports or dangerous execution calls
+def _scan_ast_tree(tree: ast.AST) -> tuple[bool, str | None, int]:
+    """Enforce AST safety rules and count `assert` statements in a parsed AST."""
+    assert_count = 0
     for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
+        if isinstance(node, ast.Assert):
+            assert_count += 1
+        elif isinstance(node, ast.Import):
             for alias in node.names:
                 root_mod = alias.name.split(".")[0]
                 if root_mod in FORBIDDEN_IMPORT_MODULES:
-                    return False, f"SecurityError: Forbidden module import '{root_mod}' in generated test code"
+                    return (
+                        False,
+                        f"SecurityError: Forbidden module import '{root_mod}' in generated test code",
+                        assert_count,
+                    )
         elif isinstance(node, ast.ImportFrom):
             if node.module:
                 root_mod = node.module.split(".")[0]
                 if root_mod in FORBIDDEN_IMPORT_MODULES:
-                    return False, f"SecurityError: Forbidden module import from '{root_mod}' in generated test code"
+                    return (
+                        False,
+                        f"SecurityError: Forbidden module import from '{root_mod}' in generated test code",
+                        assert_count,
+                    )
         elif isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name) and node.func.id in FORBIDDEN_CALL_NAMES:
-                return False, f"SecurityError: Forbidden function call '{node.func.id}()' in generated test code"
+                return (
+                    False,
+                    f"SecurityError: Forbidden function call '{node.func.id}()' in generated test code",
+                    assert_count,
+                )
             if isinstance(node.func, ast.Attribute) and node.func.attr in FORBIDDEN_CALL_NAMES:
-                return False, f"SecurityError: Forbidden method call '.{node.func.attr}()' in generated test code"
+                return (
+                    False,
+                    f"SecurityError: Forbidden method call '.{node.func.attr}()' in generated test code",
+                    assert_count,
+                )
+    return True, None, assert_count
 
-    return True, None
+
+def _parse_and_scan_full(cleaned: str) -> tuple[bool, str | None, int]:
+    """Parse an entire module string with ast.parse() and run AST security checks."""
+    try:
+        tree = ast.parse(cleaned)
+    except (SyntaxError, IndentationError) as exc:
+        line_info = f"line {exc.lineno}, col {exc.offset}" if exc.lineno else "unknown line"
+        return False, f"{type(exc).__name__} at {line_info}: {exc.msg} ({exc.text!r})", 0
+    except Exception as exc:
+        return False, f"ASTParseError: {exc}", 0
+    return _scan_ast_tree(tree)
+
+
+def validate_and_count_assertions(code: str) -> tuple[bool, str | None, int]:
+    """Parse Python code, enforce AST safety rules, and count `assert` statements.
+
+    For very large generated suites (> 100 KB), validates top-level test chunks
+    incrementally with cooperative GIL yields (`time.sleep(0)`) so concurrent
+    async health checks stay responsive on single-process deployments.
+
+    Returns:
+        (ast_valid, error_message, assertion_count)
+    """
+    cleaned = strip_markdown_fences(code)
+    if not cleaned:
+        return False, "SyntaxError: Generated code is empty", 0
+
+    if len(cleaned) > 100_000 and "\n\ndef test_" in cleaned:
+        parts = cleaned.split("\n\ndef test_")
+        chunks = [parts[0]]
+        for idx in range(1, len(parts), 25):
+            chunks.append("\n\n".join("def test_" + part for part in parts[idx : idx + 25]))
+
+        total_asserts = 0
+        try:
+            for chunk in chunks:
+                tree = ast.parse(chunk)
+                ok, err, count = _scan_ast_tree(tree)
+                total_asserts += count
+                if not ok:
+                    return False, err, total_asserts
+                time.sleep(0)
+            return True, None, total_asserts
+        except (SyntaxError, IndentationError, Exception):
+            # Fall back to full-module parse so exact line/column numbers match Python compiler errors
+            return _parse_and_scan_full(cleaned)
+
+    return _parse_and_scan_full(cleaned)
+
+
+def validate_test_syntax(code: str) -> tuple[bool, str | None]:
+    """Validate Python syntax using ast.parse() and verify AST safety rules."""
+    ok, err, _ = validate_and_count_assertions(code)
+    return ok, err
 
 
 def count_ast_assertions(code: str) -> int:

@@ -17,7 +17,7 @@ does one-shot syntax repair.
 
 ## Commands
 ```bash
-python -m pip install -r requirements.txt
+python -m pip install -r requirements.txt -r scripts/requirements-dev.txt
 export PLATFORM_SIGNING_SECRET=test-secret LLM_BASE_URL="" LLM_API_KEY=test
 uvicorn src.main:app --host 0.0.0.0 --port 8080
 python -m pytest -v                 # all unit, contract, regression & E2E tests

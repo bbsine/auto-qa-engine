@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import heapq
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -120,14 +121,12 @@ def _infer_produced_variables(op: OperationSpec) -> list[str]:
     }
 
     if op.method == "POST":
-        has_explicit_nonempty_props = False
         # Check 200/201 response schemas for id-like properties
         for code in ("201", "200", "default"):
             schema = op.response_schemas.get(code)
             if isinstance(schema, dict):
                 props = schema.get("properties")
                 if isinstance(props, dict) and props:
-                    has_explicit_nonempty_props = True
                     for prop_name in props:
                         if prop_name.lower() in ("id", "uuid", "_id", canonical_var):
                             if canonical_var not in produced:
@@ -135,12 +134,11 @@ def _infer_produced_variables(op: OperationSpec) -> list[str]:
                         elif prop_name.lower().endswith("_id"):
                             if prop_name.lower() not in produced:
                                 produced.append(prop_name.lower())
-        # Even if response schema omits explicit properties, a POST on a resource collection produces {resource}_id
-        # (unless the schema already defines explicit non-ID fields or the tail segment is an action endpoint like /login).
+        # Even if response schema is partial and omits explicit 'id' property, a POST on a resource collection
+        # produces {resource}_id (unless the tail segment is a non-resource action endpoint like /login).
         last_segment = next((s.lower() for s in reversed(op.path.strip("/").split("/")) if s), "")
         if (
-            not has_explicit_nonempty_props
-            and not op.path.rstrip("/").endswith("}")
+            not op.path.rstrip("/").endswith("}")
             and last_segment not in _NON_RESOURCE_ACTION_SEGMENTS
             and canonical_var not in produced
         ):
@@ -223,55 +221,71 @@ def build_odg_plan(parsed_spec: ParsedOpenAPISpec) -> list[PlannedStep]:
         by_resource.setdefault(op.resource_group, []).append(op)
 
     for res_ops in by_resource.values():
-        posts = [o for o in res_ops if o.method == "POST"]
-        gets = [o for o in res_ops if o.method == "GET"]
-        updates = [o for o in res_ops if o.method in ("PUT", "PATCH")]
-        deletes = [o for o in res_ops if o.method == "DELETE"]
+        sub_groups = [res_ops]
+        if len(res_ops) > 40:
+            by_prefix: dict[str, list[OperationSpec]] = {}
+            for rop in res_ops:
+                segs = [s for s in rop.path.strip("/").split("/") if s]
+                prefix = "/".join(segs[:-1]) if (segs and segs[-1].startswith("{")) else "/".join(segs)
+                by_prefix.setdefault(prefix, []).append(rop)
+            sub_groups = list(by_prefix.values())
 
-        for g in gets:
-            for p in posts:
-                if p.operation_id != g.operation_id:
-                    dependencies[g.operation_id].add(p.operation_id)
-        for u in updates:
-            for p in posts:
-                if p.operation_id != u.operation_id:
-                    dependencies[u.operation_id].add(p.operation_id)
+        for grp_ops in sub_groups:
+            posts = [o for o in grp_ops if o.method == "POST"]
+            gets = [o for o in grp_ops if o.method == "GET"]
+            updates = [o for o in grp_ops if o.method in ("PUT", "PATCH")]
+            deletes = [o for o in grp_ops if o.method == "DELETE"]
+
             for g in gets:
-                if g.path == u.path and g.operation_id != u.operation_id:
-                    dependencies[u.operation_id].add(g.operation_id)
-        for d in deletes:
-            for prior in posts + gets + updates:
-                if prior.operation_id != d.operation_id:
-                    dependencies[d.operation_id].add(prior.operation_id)
+                for p in posts:
+                    if p.operation_id != g.operation_id:
+                        dependencies[g.operation_id].add(p.operation_id)
+            for u in updates:
+                for p in posts:
+                    if p.operation_id != u.operation_id:
+                        dependencies[u.operation_id].add(p.operation_id)
+                for g in gets:
+                    if g.path == u.path and g.operation_id != u.operation_id:
+                        dependencies[u.operation_id].add(g.operation_id)
+            for d in deletes:
+                for prior in posts + gets + updates:
+                    if prior.operation_id != d.operation_id:
+                        dependencies[d.operation_id].add(prior.operation_id)
 
     # 2b. Child-before-parent DELETE ordering across resource hierarchies
-    def _norm_segments(path: str) -> list[str]:
-        return [
+    def _norm_segments(path: str) -> tuple[str, ...]:
+        return tuple(
             "*" if (seg.startswith("{") and seg.endswith("}")) else seg.lower()
             for seg in path.strip("/").split("/")
             if seg
-        ]
+        )
 
     all_deletes = [op for op in ops if op.method == "DELETE"]
-    for d_parent in all_deletes:
-        parent_cons = set(consumed_by_op[d_parent.operation_id])
-        parent_segs = _norm_segments(d_parent.path)
-        parent_prefix = parent_segs[:-1] if parent_segs and parent_segs[-1] == "*" else parent_segs
-        for d_child in all_deletes:
-            if d_parent.operation_id == d_child.operation_id:
-                continue
-            child_cons = set(consumed_by_op[d_child.operation_id])
-            child_segs = _norm_segments(d_child.path)
-            is_strict_consumed_child = bool(parent_cons) and parent_cons < child_cons
-            is_strict_path_child = (
-                bool(parent_prefix)
-                and len(child_segs) > len(parent_segs)
-                and child_segs[: len(parent_prefix)] == parent_prefix
-            )
-            if is_strict_consumed_child or is_strict_path_child:
-                dependencies[d_parent.operation_id].add(d_child.operation_id)
+    delete_info: list[tuple[OperationSpec, set[str], tuple[str, ...]]] = []
+    deletes_by_var: dict[str, list[tuple[OperationSpec, set[str]]]] = {}
+    deletes_by_prefix: dict[tuple[str, ...], list[tuple[OperationSpec, int]]] = {}
+    for d_op in all_deletes:
+        cons_set = set(consumed_by_op[d_op.operation_id])
+        segs = _norm_segments(d_op.path)
+        delete_info.append((d_op, cons_set, segs))
+        for c_var in cons_set:
+            deletes_by_var.setdefault(c_var, []).append((d_op, cons_set))
+        p_prefix = segs[:-1] if segs and segs[-1] == "*" else segs
+        if p_prefix:
+            deletes_by_prefix.setdefault(p_prefix, []).append((d_op, len(segs)))
 
-    # 3. Kahn's topological sort with deterministic tie-breaking and cycle fallback
+    for d_child, child_cons, child_segs in delete_info:
+        for c_var in child_cons:
+            for d_parent, parent_cons in deletes_by_var.get(c_var, ()):
+                if d_parent.operation_id != d_child.operation_id and parent_cons and parent_cons < child_cons:
+                    dependencies[d_parent.operation_id].add(d_child.operation_id)
+        for prefix_len in range(1, len(child_segs)):
+            prefix = child_segs[:prefix_len]
+            for d_parent, parent_len in deletes_by_prefix.get(prefix, ()):
+                if d_parent.operation_id != d_child.operation_id and len(child_segs) > parent_len:
+                    dependencies[d_parent.operation_id].add(d_child.operation_id)
+
+    # 3. Kahn's topological sort with O((V + E) log V) min-heap tie-breaking and cycle fallback
     remaining: set[str] = {op.operation_id for op in ops}
     ordered_ids: list[str] = []
     original_index = {op.operation_id: idx for idx, op in enumerate(ops)}
@@ -289,24 +303,38 @@ def build_odg_plan(parsed_spec: ParsedOpenAPISpec) -> list[PlannedStep]:
             original_index[op_id],
         )
 
+    sort_keys = {op.operation_id: _sort_key(op.operation_id) for op in ops}
+    dependents: dict[str, list[str]] = {op.operation_id: [] for op in ops}
+    in_degree: dict[str, int] = {}
+    for op_id, deps in dependencies.items():
+        in_degree[op_id] = len(deps)
+        for dep_id in deps:
+            dependents[dep_id].append(op_id)
+
+    ready_heap: list[tuple[tuple[int, int, int], str]] = [
+        (sort_keys[op.operation_id], op.operation_id)
+        for op in ops
+        if in_degree[op.operation_id] == 0
+    ]
+    heapq.heapify(ready_heap)
+
     while remaining:
-        ready = [
-            op_id
-            for op_id in remaining
-            if not (dependencies[op_id] & remaining)
-        ]
-        if ready:
-            ready.sort(key=_sort_key)
-            chosen = ready[0]
-        else:
-            cycle_candidates = sorted(
-                remaining,
-                key=lambda oid: (len(dependencies[oid] & remaining), *_sort_key(oid)),
-            )
-            chosen = cycle_candidates[0]
+        chosen: str | None = None
+        while ready_heap:
+            _, candidate = heapq.heappop(ready_heap)
+            if candidate in remaining:
+                chosen = candidate
+                break
+        if chosen is None:
+            chosen = min(remaining, key=lambda oid: (in_degree[oid], *sort_keys[oid]))
 
         ordered_ids.append(chosen)
         remaining.remove(chosen)
+        for dep_op in dependents[chosen]:
+            if dep_op in remaining:
+                in_degree[dep_op] -= 1
+                if in_degree[dep_op] == 0:
+                    heapq.heappush(ready_heap, (sort_keys[dep_op], dep_op))
 
     plan: list[PlannedStep] = []
     for idx, op_id in enumerate(ordered_ids, start=1):

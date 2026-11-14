@@ -87,7 +87,7 @@ auto-qa-engine/
 ├── tasks.md                 # Phase 0: Phased implementation checklist
 ├── agent.yaml               # Agent identity card, schemas, runtime, demo samples
 ├── Dockerfile               # python:3.12-slim, USER 1000, port 8080
-├── requirements.txt         # Pinned lightweight dependencies
+├── requirements.txt         # Lightweight runtime dependencies
 ├── EVAL_REPORT.md           # Midterm deliverable: execution report of cases.yaml
 ├── README.md                # Setup, architecture, local run & test guide
 ├── src/

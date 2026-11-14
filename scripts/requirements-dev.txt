@@ -1,5 +1,9 @@
-# Developer-only tools. NOT used by src/ and NOT part of requirements.txt (runtime image).
+# Developer, test-runner, and showcase tools. NOT used by src/ and NOT part of runtime requirements.txt.
+# pytest, httpx, requests: local/CI test suite & generated E2E pytest verification
 # pillow: scripts/make_assets.py (store images, real TrueType fonts)
 # python-multipart: tests/e2e/form_servers.py (FastAPI Form()/UploadFile reference servers)
+pytest>=8.0.0
+httpx>=0.27.0
+requests>=2.31.0
 pillow>=10.0.0
 python-multipart>=0.0.9

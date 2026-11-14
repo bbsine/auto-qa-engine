@@ -39,7 +39,7 @@ auto-qa-engine/
 ├── Dockerfile                 # python:3.12-slim, USER 1000, PORT=8080
 ├── .gitignore                 # .env, __pycache__, .venv, IDE ve geçici dosyalar
 ├── .dockerignore              # Docker bağlam (context) dışlama kuralları
-├── requirements.txt           # Sabitlenmiş minimal çalışma zamanı bağımlılıkları
+├── requirements.txt           # Minimal çalışma zamanı bağımlılıkları
 ├── EVAL_REPORT.md             # 38 senaryoluk değerlendirme raporu (%100 başarı)
 ├── architecture.md            # Sistem mimarisi, ODG ve AST öz-onarım tasarımı
 ├── memory.md                  # Sabit tasarım kararları ve 100 puanlık vize rubriği
@@ -65,7 +65,7 @@ auto-qa-engine/
 │   ├── fake_llm_server.py     # Canlı LLM Proxy senaryoları için yerel OpenAI uyumlu sunucu
 │   └── run_evals.py           # Değerlendirme koşturucusu ve şema doğrulayıcı
 ├── scripts/
-│   ├── requirements-dev.txt   # Yalnızca yerel geliştirici araçları (pillow>=10.0.0)
+│   ├── requirements-dev.txt   # Yerel test, eval ve geliştirici bağımlılıkları (pytest, httpx, requests, python-multipart, pillow)
 │   ├── make_assets.py         # Gerçek motor çıktısından vitrin görsellerini üreten betik
 │   ├── check_submission.py    # Rehber Ek C teslim öncesi otomatik denetim betiği
 │   └── lint_integrations.py   # integrations/*.md|*.mdc kural denetleyicisi
@@ -114,7 +114,7 @@ uvicorn src.main:app --host 0.0.0.0 --port 8080
 ### 3.3 Docker ile Paketleme ve Çalıştırma
 
 ```bash
-# İmajı derleyin (274 MB < 1 GB, python:3.12-slim, USER 1000)
+# İmajı derleyin (< 1 GB sınırı, python:3.12-slim, USER 1000)
 docker build -t auto-qa-engine:v-vize .
 
 # Container'ı başlatın
@@ -138,6 +138,9 @@ curl http://localhost:8080/health
 ## 4. Testleri, Eval Setini ve Teslim Kontrollerini Çalıştırma
 
 ```bash
+# Önce çalışma zamanı ve test/geliştirme bağımlılıklarını kurun
+python -m pip install -r requirements.txt -r scripts/requirements-dev.txt
+
 # Tüm birim, sözleşme, regresyon ve uçtan uca testleri çalıştırın
 python -m pytest tests independent_tests -v
 

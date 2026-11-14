@@ -107,5 +107,5 @@ TOTAL: 38/38 passed (100.0%) | avg=16.53ms | max=275.26ms
    - 2000 rastgele 11 haneli sayıda TCKN algoritma kontrolünün (`_tckn_check`) yanlış pozitif oranı **16/2000 (%0.80)** olarak ölçülmüştür.
 2. **Bu raporun kapsamadığı noktalar:**
    - Eval seti yerel (`run_evals.py`) koşucuyla çalıştırılmıştır; platformun merkezi eval koşucusunun proje özel `expect` anahtarlarını nasıl ele aldığı doğrulanmamıştır (bkz. [`evals/README.md`](evals/README.md) Bölüm 3).
-   - Docker imajı (`auto-qa-engine:v-vize`, 274 MB, `/health` soğuk başlangıç `1.34 sn`) ve iki gerçek örnek proje (Python/FastAPI + Node.js/Express) yerel olarak doğrulanmıştır; yalnızca canlı platform LLM Proxy'si yerine yerel `FakeLLMServer` kullanılmıştır.
+   - Bu değerlendirme koşturmasında canlı platform LLM Proxy'si yerine yerel `FakeLLMServer` kullanılmıştır; Docker imajı boyutu (`< 1 GB` sınırı) ve container soğuk başlangıç süresi hedef ortamda `docker build` / `docker run` ile ayrıca doğrulanmalıdır.
 3. **Başarısız kalan senaryo:** Bu koşturmada **0**.

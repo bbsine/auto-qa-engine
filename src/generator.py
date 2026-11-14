@@ -17,8 +17,8 @@ from src.planner import PlannedStep, build_odg_plan
 from src.security import contains_prohibited_payment_data, is_ssrf_url, scan_object_for_sensitive_data
 from src.validator import (
     build_deterministic_pytest_suite,
-    count_ast_assertions,
     strip_markdown_fences,
+    validate_and_count_assertions,
     validate_test_syntax,
 )
 
@@ -340,7 +340,7 @@ def _enrich_mocks_via_llm(
 
     from src.validator import _file_field_names, body_encoding_for_content_type
 
-    body_steps = [step for step in plan if step.operation.request_body_schema]
+    body_steps = [step for step in plan if step.operation.request_body_schema][:30]
     if not body_steps:
         logger.info("llm_enrichment=disabled reason=no_request_body tenant_id=%s request_id=%s", tenant_id, request_id)
         return base_mocks
@@ -592,7 +592,10 @@ def generate_test_suite_pipeline(
         base_url = resolve_effective_base_url(inp.get("base_url"), parsed_spec.servers, parsed_spec.base_path)
         user_base_url = inp.get("base_url")
         has_user_base_url = isinstance(user_base_url, str) and bool(user_base_url.strip())
-        # Enforce SSRF / sensitive-data checks on final resolved URL (both explicit input.base_url and spec.servers[0]).
+        # Enforce SSRF / sensitive-data checks on final resolved URL.
+        # Note: explicit input.base_url still blocks private RFC 1918 & .internal/.local/.lan addresses, while
+        # spec.servers[0] fallback (when base_url is omitted) allows private/internal servers because no runtime
+        # HTTP call is made to them — only cloud metadata, unspecified IPs, and non-HTTP schemes stay blocked.
         ssrf_candidate = base_url
         skip_relative_spec_url = (
             not has_user_base_url
@@ -600,9 +603,14 @@ def generate_test_suite_pipeline(
             and not ssrf_candidate.startswith("//")
         )
         if not skip_relative_spec_url:
-            if not has_user_base_url and "{scheme}" in ssrf_candidate:
+            if not has_user_base_url:
                 ssrf_candidate = ssrf_candidate.replace("{scheme}", "https")
-            unsafe, reason = is_ssrf_url(ssrf_candidate, allow_local_base_url=True)
+                ssrf_candidate = re.sub(r"\{[^}]+\}", "example", ssrf_candidate)
+            unsafe, reason = is_ssrf_url(
+                ssrf_candidate,
+                allow_local_base_url=True,
+                allow_private_spec_server=not has_user_base_url,
+            )
             if unsafe:
                 raise ValueError(f"ssrf_blocked: {reason}")
         if contains_prohibited_payment_data(base_url):
@@ -641,7 +649,7 @@ def generate_test_suite_pipeline(
             test_framework=test_framework,
         )
 
-        ast_valid, ast_error = validate_test_syntax(candidate_code)
+        ast_valid, ast_error, total_assertions = validate_and_count_assertions(candidate_code)
         self_healed = False
         effective_neg = include_negative
         effective_sec = include_security
@@ -649,7 +657,7 @@ def generate_test_suite_pipeline(
             repaired_code, healed = attempt_single_turn_ast_repair(candidate_code, ast_error)
             if healed:
                 candidate_code = repaired_code
-                ast_valid = True
+                ast_valid, _, total_assertions = validate_and_count_assertions(candidate_code)
                 self_healed = True
             else:
                 effective_neg = False
@@ -662,7 +670,7 @@ def generate_test_suite_pipeline(
                     include_security_tests=False,
                     test_framework=test_framework,
                 )
-                ast_valid, _ = validate_test_syntax(candidate_code)
+                ast_valid, _, total_assertions = validate_and_count_assertions(candidate_code)
                 self_healed = True
 
         positive_count = len(odg_plan)
@@ -684,7 +692,6 @@ def generate_test_suite_pipeline(
             )
         )
         total_tests = positive_count + negative_count + security_count
-        total_assertions = count_ast_assertions(candidate_code)
         endpoints_covered = parsed_spec.paths
 
         estimated_coverage_pct = (

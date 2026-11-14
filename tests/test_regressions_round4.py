@@ -90,6 +90,7 @@ def _run_generated_pytest(code: str, tmp_path: Path, name: str) -> subprocess.Co
     test_file.write_text(code, encoding="utf-8")
     return subprocess.run(
         [sys.executable, "-m", "pytest", str(test_file), "-v", "--tb=short"],
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         timeout=30,

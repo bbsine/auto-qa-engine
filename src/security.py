@@ -130,12 +130,19 @@ def _try_parse_ip_variants(hostname: str) -> ipaddress.IPv4Address | ipaddress.I
     return None
 
 
-def is_ssrf_url(url: str, allow_local_base_url: bool = False) -> tuple[bool, str]:
+def is_ssrf_url(
+    url: str,
+    allow_local_base_url: bool = False,
+    allow_private_spec_server: bool = False,
+) -> tuple[bool, str]:
     """Check whether a URL targets loopback, link-local metadata, RFC 1918 private IPs, or non-HTTP schemes.
 
     When `allow_local_base_url=True` (used for `base_url` which is only written into generated test templates
     and never fetched by the container), `localhost` and loopback addresses (`127.0.0.1`, `::1`, `::ffff:127.0.0.1`)
     are permitted, while cloud metadata (`169.254.169.254`), private subnets, and non-HTTP schemes remain blocked.
+    When `allow_private_spec_server=True` (used when falling back to `spec.servers[0]` if `input.base_url` is omitted,
+    which is also never fetched by the container), RFC 1918 private IPs and `.internal`/`.local`/`.lan` hostnames are
+    additionally permitted while cloud metadata, unspecified (`0.0.0.0`), reserved/multicast, and non-HTTP schemes remain blocked.
     """
     if not url or not isinstance(url, str):
         return False, ""
@@ -158,7 +165,12 @@ def is_ssrf_url(url: str, allow_local_base_url: bool = False) -> tuple[bool, str
         return True, f"SSRF engellendi: Bulut metadata adresi ({raw_host}) kullanılamaz."
 
     if raw_host in BLOCKED_HOSTNAMES:
-        if allow_local_base_url and raw_host in ("localhost", "localhost.localdomain", "127.0.0.1", "::1"):
+        if (allow_local_base_url or allow_private_spec_server) and raw_host in (
+            "localhost",
+            "localhost.localdomain",
+            "127.0.0.1",
+            "::1",
+        ):
             return False, ""
         return True, f"SSRF engellendi: Yerel ağ adresi ({raw_host}) dış çağrılarda kullanılamaz."
 
@@ -171,15 +183,21 @@ def is_ssrf_url(url: str, allow_local_base_url: bool = False) -> tuple[bool, str
         if ip.is_link_local or str(ip) == "169.254.169.254":
             return True, f"SSRF engellendi: Link-local / metadata IP adresi ({ip}) yasaktır."
         if ip.is_loopback or ip.is_unspecified:
-            if allow_local_base_url and ip.is_loopback:
+            if (allow_local_base_url or allow_private_spec_server) and ip.is_loopback:
                 return False, ""
             return True, f"SSRF engellendi: Loopback IP adresi ({ip}) yasaktır."
-        if ip.is_private or ip.is_reserved or ip.is_multicast:
+        if ip.is_reserved or ip.is_multicast:
+            return True, f"SSRF engellendi: Özel ağ (RFC 1918) IP adresi ({ip}) yasaktır."
+        if ip.is_private:
+            if allow_private_spec_server:
+                return False, ""
             return True, f"SSRF engellendi: Özel ağ (RFC 1918) IP adresi ({ip}) yasaktır."
     else:
         if raw_host.endswith((".internal", ".local", ".lan")):
+            if allow_private_spec_server:
+                return False, ""
             return True, f"SSRF engellendi: Dahili ağ alan adı ({raw_host}) yasaktır."
-        if raw_host.endswith(".localhost") and not allow_local_base_url:
+        if raw_host.endswith(".localhost") and not (allow_local_base_url or allow_private_spec_server):
             return True, f"SSRF engellendi: Yerel alan adı ({raw_host}) yasaktır."
 
     return False, ""
@@ -312,17 +330,27 @@ def contains_prohibited_payment_data(text: str) -> bool:
     return False
 
 
-def scan_object_for_sensitive_data(node: Any) -> bool:
-    """Recursively walk all keys and string leaves of a parsed YAML/JSON object for prohibited sensitive data."""
+def scan_object_for_sensitive_data(node: Any, _seen: set[int] | None = None) -> bool:
+    """Recursively walk unique containers, keys, and leaf values of a parsed YAML/JSON object for sensitive data."""
     if isinstance(node, str):
         return contains_prohibited_payment_data(node)
-    if isinstance(node, dict):
-        for k, v in node.items():
-            if isinstance(k, str) and contains_prohibited_payment_data(k):
-                return True
-            if scan_object_for_sensitive_data(v):
-                return True
+    if isinstance(node, int) and not isinstance(node, bool):
+        if 10**10 <= abs(node) <= 10**19:
+            return contains_prohibited_payment_data(str(node))
         return False
-    if isinstance(node, (list, tuple, set)):
-        return any(scan_object_for_sensitive_data(item) for item in node)
+    if isinstance(node, (dict, list, tuple, set)):
+        if _seen is None:
+            _seen = set()
+        obj_id = id(node)
+        if obj_id in _seen:
+            return False
+        _seen.add(obj_id)
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if isinstance(k, str) and contains_prohibited_payment_data(k):
+                    return True
+                if scan_object_for_sensitive_data(v, _seen):
+                    return True
+            return False
+        return any(scan_object_for_sensitive_data(item, _seen) for item in node)
     return False

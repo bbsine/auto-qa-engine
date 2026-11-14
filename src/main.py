@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, Callable
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from src.generator import (
     InputShapeError,
@@ -102,8 +103,17 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 
 def _validate_request_security(inp: dict[str, Any], cfg: dict[str, Any]) -> tuple[bool, str, str]:
     """Enforce SSRF and §4.3 payment/TCKN data red-line checks on incoming payload."""
-    raw_dump = json.dumps({"input": inp, "config": cfg}, ensure_ascii=False)
-    if contains_prohibited_payment_data(raw_dump) or scan_object_for_sensitive_data(inp) or scan_object_for_sensitive_data(cfg):
+    small_inp = {
+        k: v
+        for k, v in inp.items()
+        if not (k in ("openapi_spec", "existing_test_code") and isinstance(v, str))
+    }
+    raw_small_dump = json.dumps({"input": small_inp, "config": cfg}, ensure_ascii=False)
+    if (
+        contains_prohibited_payment_data(raw_small_dump)
+        or scan_object_for_sensitive_data(inp)
+        or scan_object_for_sensitive_data(cfg)
+    ):
         return (
             False,
             "prohibited_sensitive_data",
@@ -142,6 +152,34 @@ OPERATIONS: dict[str, Callable[[dict[str, Any], dict[str, Any]], tuple[dict[str,
 def health() -> dict[str, str]:
     """Fast health check probe responding in < 2 seconds."""
     return {"status": "ok"}
+
+
+def _execute_invoke_sync(
+    op: Callable[[dict[str, Any], dict[str, Any]], tuple[dict[str, Any], str, list[dict[str, Any]]]],
+    inp: dict[str, Any],
+    cfg: dict[str, Any],
+    tenant_id: str,
+    request_id: str,
+) -> tuple[bool, str, str, bytes | None]:
+    """Run blocking request validation, operation pipeline, and JSON encoding off the asyncio event loop."""
+    is_safe, err_code, err_msg = _validate_request_security(inp, cfg)
+    if not is_safe:
+        return False, err_code, err_msg, None
+
+    cfg_with_meta = dict(cfg)
+    cfg_with_meta["__tenant_id__"] = tenant_id
+    cfg_with_meta["__request_id__"] = request_id
+    output, status, artifacts = op(inp, cfg_with_meta)
+    body_bytes = json.dumps(
+        {
+            "output": output,
+            "status": status,
+            "artifacts": artifacts,
+            "actions": [],
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return True, "", "", body_bytes
 
 
 @app.post("/v1/invoke")
@@ -183,14 +221,17 @@ async def invoke(request: Request) -> Any:
     logger.info("Invoke request received: tenant_id=%s request_id=%s operation=%s", tenant_id, request_id, operation_name)
 
     try:
-        is_safe, err_code, err_msg = _validate_request_security(inp, cfg)
+        is_safe, err_code, err_msg, body_bytes = await asyncio.to_thread(
+            _execute_invoke_sync,
+            op,
+            inp,
+            cfg,
+            tenant_id,
+            request_id,
+        )
         if not is_safe:
             return JSONResponse({"error": {"code": err_code, "message": err_msg}}, status_code=422)
-
-        cfg_with_meta = dict(cfg)
-        cfg_with_meta["__tenant_id__"] = tenant_id
-        cfg_with_meta["__request_id__"] = request_id
-        output, status, artifacts = op(inp, cfg_with_meta)
+        assert body_bytes is not None
     except HTTPException:
         raise
     except ValueError as exc:
@@ -222,9 +263,4 @@ async def invoke(request: Request) -> Any:
             status_code=500,
         )
 
-    return {
-        "output": output,
-        "status": status,
-        "artifacts": artifacts,
-        "actions": [],
-    }
+    return Response(content=body_bytes, media_type="application/json")

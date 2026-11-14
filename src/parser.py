@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
@@ -15,6 +16,9 @@ from src.security import contains_prohibited_payment_data, scan_object_for_sensi
 
 HTTP_METHODS = ("get", "post", "put", "patch", "delete", "options", "head")
 MAX_SCHEMA_DEPTH = 40
+MAX_ALIAS_EXPANDED_NODES = 200_000
+MAX_SPEC_TOTAL_NODES = 300_000
+MAX_REF_EXPANSION_NODES = 150_000
 
 
 @dataclass
@@ -65,11 +69,90 @@ class ParsedOpenAPISpec:
     @property
     def paths(self) -> list[str]:
         """Return unique API paths preserving order."""
-        seen: list[str] = []
-        for op in self.operations:
-            if op.path not in seen:
-                seen.append(op.path)
-        return seen
+        return list(dict.fromkeys(op.path for op in self.operations))
+
+
+def _validate_structure_bounds(root: Any) -> None:
+    """Detect cyclic YAML aliases and exponential alias bombs in O(unique_nodes) time before traversal."""
+    memo_size: dict[int, int] = {}
+    active: set[int] = set()
+    alias_reused_nodes = 0
+
+    def _measure(node: Any, depth: int) -> int:
+        nonlocal alias_reused_nodes
+        if depth > MAX_SCHEMA_DEPTH * 2:
+            raise ValueError("invalid_openapi_syntax: Şema derinliği izin verilen sınırı aşıyor.")
+        if not isinstance(node, (dict, list)):
+            return 1
+        obj_id = id(node)
+        if obj_id in active:
+            raise ValueError("invalid_openapi_syntax: Şemada döngüsel YAML alias referansı tespit edildi.")
+        if obj_id in memo_size:
+            reused = memo_size[obj_id]
+            alias_reused_nodes += reused
+            if alias_reused_nodes > MAX_ALIAS_EXPANDED_NODES:
+                raise ValueError(
+                    "invalid_openapi_syntax: Şema boyutu veya YAML alias genişlemesi izin verilen sınırı aşıyor."
+                )
+            return reused
+        active.add(obj_id)
+        total = 1
+        if isinstance(node, dict):
+            for _, v in node.items():
+                total += 1 + _measure(v, depth + 1)
+                if total > MAX_SPEC_TOTAL_NODES or alias_reused_nodes > MAX_ALIAS_EXPANDED_NODES:
+                    raise ValueError(
+                        "invalid_openapi_syntax: Şema boyutu veya YAML alias genişlemesi izin verilen sınırı aşıyor."
+                    )
+        else:
+            for item in node:
+                total += _measure(item, depth + 1)
+                if total > MAX_SPEC_TOTAL_NODES or alias_reused_nodes > MAX_ALIAS_EXPANDED_NODES:
+                    raise ValueError(
+                        "invalid_openapi_syntax: Şema boyutu veya YAML alias genişlemesi izin verilen sınırı aşıyor."
+                    )
+        active.remove(obj_id)
+        memo_size[obj_id] = total
+        return total
+
+    _measure(root, 0)
+
+
+def _deref_shallow(node: Any, root: dict[str, Any]) -> Any:
+    """Resolve top-level `$ref` pointers without recursively expanding child schemas."""
+    current = node
+    visited: set[str] = set()
+    depth = 0
+    while isinstance(current, dict) and isinstance(current.get("$ref"), str) and depth <= MAX_SCHEMA_DEPTH:
+        ref = current["$ref"]
+        if not ref.startswith("#/") or ref in visited:
+            break
+        visited.add(ref)
+        parts = [p.replace("~1", "/").replace("~0", "~") for p in ref[2:].split("/")]
+        target: Any = root
+        for part in parts:
+            if isinstance(target, dict) and part in target:
+                target = target[part]
+            else:
+                target = None
+                break
+        if not isinstance(target, dict):
+            break
+        siblings = {k: v for k, v in current.items() if k != "$ref"}
+        current = {**target, **siblings} if siblings else target
+        depth += 1
+    return current
+
+
+def _has_circular_marker(node: Any) -> bool:
+    """Return True if a resolved subtree contains a circular-$ref placeholder marker."""
+    if isinstance(node, dict):
+        if "x-circular-ref" in node:
+            return True
+        return any(_has_circular_marker(v) for v in node.values())
+    if isinstance(node, list):
+        return any(_has_circular_marker(item) for item in node)
+    return False
 
 
 def _resolve_json_pointer(
@@ -77,8 +160,10 @@ def _resolve_json_pointer(
     ref: str,
     visited: set[str] | None = None,
     depth: int = 0,
+    _budget: list[int] | None = None,
+    _ref_cache: dict[str, tuple[dict[str, Any], int]] | None = None,
 ) -> dict[str, Any]:
-    """Resolve an internal JSON pointer like '#/components/schemas/User' with recursion protection."""
+    """Resolve an internal JSON pointer like '#/components/schemas/User' with recursion and expansion guards."""
     if not isinstance(ref, str) or not ref.startswith("#/") or depth > MAX_SCHEMA_DEPTH:
         return {"type": "object"}
 
@@ -87,6 +172,18 @@ def _resolve_json_pointer(
     if ref in visited:
         # Break circular $ref cleanly
         return {"type": "object", "x-circular-ref": ref}
+
+    if _budget is None:
+        _budget = [0]
+    if _ref_cache is None:
+        _ref_cache = {}
+
+    if ref in _ref_cache:
+        cached_schema, node_weight = _ref_cache[ref]
+        _budget[0] += node_weight
+        if _budget[0] > MAX_REF_EXPANSION_NODES:
+            raise ValueError("invalid_openapi_syntax: Şema referans ($ref) genişlemesi sınırı aşıyor.")
+        return copy.deepcopy(cached_schema)
 
     visited = visited | {ref}
     parts = [p.replace("~1", "/").replace("~0", "~") for p in ref[2:].split("/")]
@@ -100,7 +197,11 @@ def _resolve_json_pointer(
     if not isinstance(current, dict):
         return {"type": "object"}
 
-    return resolve_schema_refs(current, root, visited, depth + 1)
+    budget_before = _budget[0]
+    resolved = resolve_schema_refs(current, root, visited, depth + 1, _budget=_budget, _ref_cache=_ref_cache)
+    if isinstance(resolved, dict) and not _has_circular_marker(resolved):
+        _ref_cache[ref] = (copy.deepcopy(resolved), max(1, _budget[0] - budget_before))
+    return resolved
 
 
 def resolve_schema_refs(
@@ -108,34 +209,80 @@ def resolve_schema_refs(
     root: dict[str, Any],
     visited: set[str] | None = None,
     depth: int = 0,
+    _budget: list[int] | None = None,
+    _ref_cache: dict[str, tuple[dict[str, Any], int]] | None = None,
 ) -> Any:
     """Recursively resolve all internal $ref pointers within a schema dictionary or list."""
+    if _budget is None:
+        _budget = [0]
+    if _ref_cache is None:
+        _ref_cache = {}
+
     if depth > MAX_SCHEMA_DEPTH:
         return {"type": "object"} if isinstance(node, dict) else node
 
     if isinstance(node, list):
-        return [resolve_schema_refs(item, root, visited, depth + 1) for item in node]
+        _budget[0] += 1
+        if _budget[0] > MAX_REF_EXPANSION_NODES:
+            raise ValueError("invalid_openapi_syntax: Şema referans ($ref) genişlemesi sınırı aşıyor.")
+        return [
+            resolve_schema_refs(item, root, visited, depth + 1, _budget=_budget, _ref_cache=_ref_cache)
+            for item in node
+        ]
 
     if not isinstance(node, dict):
         return node
 
+    _budget[0] += 1
+    if _budget[0] > MAX_REF_EXPANSION_NODES:
+        raise ValueError("invalid_openapi_syntax: Şema referans ($ref) genişlemesi sınırı aşıyor.")
+
     if "$ref" in node and isinstance(node["$ref"], str):
-        resolved = copy.deepcopy(_resolve_json_pointer(root, node["$ref"], visited, depth + 1))
+        resolved = copy.deepcopy(
+            _resolve_json_pointer(
+                root,
+                node["$ref"],
+                visited,
+                depth + 1,
+                _budget=_budget,
+                _ref_cache=_ref_cache,
+            )
+        )
         # Merge any sibling keys overriding the $ref (OpenAPI 3.1 style)
         for k, v in node.items():
             if k != "$ref":
-                resolved[k] = resolve_schema_refs(v, root, visited, depth + 1)
+                resolved[k] = resolve_schema_refs(
+                    v,
+                    root,
+                    visited,
+                    depth + 1,
+                    _budget=_budget,
+                    _ref_cache=_ref_cache,
+                )
         return resolved
 
     result: dict[str, Any] = {}
     all_of_subs: list[Any] | None = None
     for k, v in node.items():
         if k == "allOf" and isinstance(v, list):
-            all_of_subs = [resolve_schema_refs(sub, root, visited, depth + 1) for sub in v]
+            all_of_subs = [
+                resolve_schema_refs(sub, root, visited, depth + 1, _budget=_budget, _ref_cache=_ref_cache)
+                for sub in v
+            ]
         elif k in ("anyOf", "oneOf") and isinstance(v, list):
-            result[k] = [resolve_schema_refs(sub, root, visited, depth + 1) for sub in v]
+            result[k] = [
+                resolve_schema_refs(sub, root, visited, depth + 1, _budget=_budget, _ref_cache=_ref_cache)
+                for sub in v
+            ]
         else:
-            result[k] = resolve_schema_refs(v, root, visited, depth + 1)
+            result[k] = resolve_schema_refs(
+                v,
+                root,
+                visited,
+                depth + 1,
+                _budget=_budget,
+                _ref_cache=_ref_cache,
+            )
 
     if all_of_subs is not None:
         merged_props: dict[str, Any] = {}
@@ -285,6 +432,7 @@ def parse_openapi_spec(
     Raises ValueError with an explicit error code prefix if the input is malformed or empty.
     """
     if isinstance(spec_input, dict):
+        _validate_structure_bounds(spec_input)
         raw_doc = copy.deepcopy(spec_input)
     elif isinstance(spec_input, str):
         text = spec_input.strip()
@@ -302,6 +450,8 @@ def parse_openapi_spec(
 
     if not isinstance(raw_doc, dict):
         raise ValueError("invalid_openapi_root: OpenAPI şeması bir kök nesne (mapping) olmalıdır.")
+
+    _validate_structure_bounds(raw_doc)
 
     # Scan both raw string (if provided) and parsed YAML/JSON structure (after YAML escape/folding) for prohibited PAN/CVV/TCKN data
     if (isinstance(spec_input, str) and contains_prohibited_payment_data(spec_input)) or scan_object_for_sensitive_data(raw_doc):
@@ -348,6 +498,9 @@ def parse_openapi_spec(
 
     global_security = bool(raw_doc.get("security"))
 
+    ref_cache: dict[str, tuple[dict[str, Any], int]] = {}
+    ref_budget: list[int] = [0]
+
     # Resolve component schemas (OpenAPI 3.x components.schemas + Swagger 2.0 definitions)
     components = raw_doc.get("components") if isinstance(raw_doc.get("components"), dict) else {}
     schemas_raw = components.get("schemas") if isinstance(components.get("schemas"), dict) else {}
@@ -355,13 +508,20 @@ def parse_openapi_spec(
     resolved_schemas: dict[str, dict[str, Any]] = {}
     for s_name, s_val in {**definitions_raw, **schemas_raw}.items():
         if isinstance(s_val, dict):
-            resolved_schemas[str(s_name)] = resolve_schema_refs(s_val, raw_doc)
+            resolved_schemas[str(s_name)] = resolve_schema_refs(
+                s_val,
+                raw_doc,
+                _budget=ref_budget,
+                _ref_cache=ref_cache,
+            )
 
     target_set = set(target_endpoints) if target_endpoints else None
     operations: list[OperationSpec] = []
     seen_op_ids: set[str] = set()
 
-    for path_str, path_item in paths_obj.items():
+    for path_idx, (path_str, path_item) in enumerate(paths_obj.items()):
+        if path_idx and path_idx % 250 == 0:
+            time.sleep(0)
         if not isinstance(path_str, str) or not isinstance(path_item, dict):
             continue
         if target_set is not None and path_str not in target_set:
@@ -396,14 +556,14 @@ def parse_openapi_spec(
             form_required: list[str] = []
 
             for p_raw in path_level_params + op_params_raw:
-                p_resolved = resolve_schema_refs(p_raw, raw_doc)
+                p_resolved = resolve_schema_refs(p_raw, raw_doc, _budget=ref_budget, _ref_cache=ref_cache)
                 if not isinstance(p_resolved, dict):
                     continue
                 p_in = str(p_resolved.get("in") or "query").strip().lower()
                 if p_in == "body":
                     candidate_body = p_resolved.get("schema")
                     if isinstance(candidate_body, dict):
-                        swagger2_body_schema = resolve_schema_refs(candidate_body, raw_doc)
+                        swagger2_body_schema = candidate_body
                         swagger2_body_required = bool(p_resolved.get("required", False))
                         has_body_param = True
                     continue
@@ -433,7 +593,7 @@ def parse_openapi_spec(
                         }
                         if "type" not in f_schema:
                             f_schema["type"] = "string"
-                    form_props[p_name] = resolve_schema_refs(f_schema, raw_doc)
+                    form_props[p_name] = f_schema
                     if str(form_props[p_name].get("type") or "").strip().lower() == "file":
                         has_file_param = True
                     if p_resolved.get("required") and p_name not in form_required:
@@ -483,7 +643,7 @@ def parse_openapi_spec(
             req_body_schema: dict[str, Any] | None = None
             req_body_required = False
             req_content_type: str | None = None
-            req_body_raw = resolve_schema_refs(op_obj.get("requestBody"), raw_doc)
+            req_body_raw = _deref_shallow(op_obj.get("requestBody"), raw_doc)
             if isinstance(req_body_raw, dict):
                 req_body_required = bool(req_body_raw.get("required", False))
                 content_map = req_body_raw.get("content")
@@ -495,13 +655,23 @@ def parse_openapi_spec(
                         if mime in normalized_content and isinstance(normalized_content[mime], dict):
                             candidate = normalized_content[mime].get("schema")
                             if isinstance(candidate, dict):
-                                req_body_schema = resolve_schema_refs(candidate, raw_doc)
+                                req_body_schema = resolve_schema_refs(
+                                    candidate,
+                                    raw_doc,
+                                    _budget=ref_budget,
+                                    _ref_cache=ref_cache,
+                                )
                                 req_content_type = mime
                                 break
                     if req_body_schema is None:
                         for mime_key, media_obj in normalized_content.items():
                             if isinstance(media_obj, dict) and isinstance(media_obj.get("schema"), dict):
-                                req_body_schema = resolve_schema_refs(media_obj["schema"], raw_doc)
+                                req_body_schema = resolve_schema_refs(
+                                    media_obj["schema"],
+                                    raw_doc,
+                                    _budget=ref_budget,
+                                    _ref_cache=ref_cache,
+                                )
                                 req_content_type = mime_key
                                 break
 
@@ -532,16 +702,26 @@ def parse_openapi_spec(
             for status_key, resp_val in responses_raw.items():
                 code_str = str(status_key)
                 status_codes.append(code_str)
-                resp_resolved = resolve_schema_refs(resp_val, raw_doc)
+                resp_resolved = _deref_shallow(resp_val, raw_doc)
                 if isinstance(resp_resolved, dict):
                     resp_content = resp_resolved.get("content")
                     if isinstance(resp_content, dict):
                         for media_obj in resp_content.values():
                             if isinstance(media_obj, dict) and isinstance(media_obj.get("schema"), dict):
-                                response_schemas[code_str] = resolve_schema_refs(media_obj["schema"], raw_doc)
+                                response_schemas[code_str] = resolve_schema_refs(
+                                    media_obj["schema"],
+                                    raw_doc,
+                                    _budget=ref_budget,
+                                    _ref_cache=ref_cache,
+                                )
                                 break
                     if code_str not in response_schemas and isinstance(resp_resolved.get("schema"), dict):
-                        response_schemas[code_str] = resolve_schema_refs(resp_resolved["schema"], raw_doc)
+                        response_schemas[code_str] = resolve_schema_refs(
+                            resp_resolved["schema"],
+                            raw_doc,
+                            _budget=ref_budget,
+                            _ref_cache=ref_cache,
+                        )
 
             if not status_codes:
                 status_codes = ["200"] if method_lower != "post" else ["201"]
